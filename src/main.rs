@@ -255,7 +255,9 @@ fn main() {
         return;
     }
 
-    let query = args.get(1).map(|s| s.trim()).unwrap_or("");
+    // Preserve the raw query to check for trailing spaces
+    let raw_query = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let query = raw_query.trim_start();
     let lower_query = query.to_lowercase();
     let all_terms: Vec<&str> = lower_query.split_whitespace().collect();
 
@@ -344,23 +346,97 @@ fn main() {
         return;
     }
 
-    let mut items = Vec::new();
-    let search_terms: Vec<&str> = all_terms.into_iter().filter(|t| !t.starts_with('#')).collect();
-    let is_empty_search = search_terms.is_empty();
-
     let mut results = cached_data_opt.unwrap().files;
+    let mut items = Vec::new();
+
+    let ends_with_space = raw_query.ends_with(' ');
+    let last_term = all_terms.last().copied().unwrap_or("");
+    let is_autocompleting_tag = !ends_with_space && last_term.starts_with('#');
+
+    // Tag Autocomplete Mode
+    if is_autocompleting_tag {
+        let partial_tag = last_term.trim_start_matches('#');
+        let mut tag_counts: HashMap<&String, u32> = HashMap::new();
+        
+        for res in &results {
+            for tag in &res.tags {
+                *tag_counts.entry(tag).or_insert(0) += 1;
+            }
+        }
+        
+        let mut matched_tags: Vec<(&String, u32)> = tag_counts.into_iter()
+            .filter(|(t, _)| t.contains(partial_tag))
+            .collect();
+            
+        matched_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        
+        let prefix = if all_terms.len() > 1 {
+            let terms_before = &all_terms[..all_terms.len() - 1];
+            format!("{} ", terms_before.join(" "))
+        } else {
+            "".to_string()
+        };
+
+        // Inject vault routing tags into autocomplete
+        let mut matched_vaults: Vec<&String> = vault_map.keys()
+            .filter(|k| k.starts_with('#') && k.trim_start_matches('#').contains(partial_tag))
+            .collect();
+        matched_vaults.sort();
+
+        for vault_key in matched_vaults {
+            items.push(
+                Item::new(vault_key.clone())
+                    .set_subtitle("Route search to this vault")
+                    .set_autocomplete(format!("{}{}", prefix, vault_key))
+                    .set_valid(false)
+            );
+        }
+
+        for (tag, count) in matched_tags.into_iter().take(30) {
+            items.push(
+                Item::new(format!("#{}", tag))
+                    .set_subtitle(format!("{} notes", count))
+                    .set_autocomplete(format!("{}#{} ", prefix, tag))
+                    .set_valid(false)
+            );
+        }
+        
+        if items.is_empty() {
+            items.push(Item::new("No matching tags").set_valid(false));
+        }
+
+        let output = AlfredOutput { rerun: None, items };
+        println!("{}", serde_json::to_string(&output).unwrap());
+        return;
+    }
+
+    // Normal Search Mode
+    let title_terms: Vec<&str> = all_terms.iter()
+        .filter(|t| !t.starts_with('#'))
+        .copied()
+        .collect();
+        
+    let tag_terms: Vec<&str> = all_terms.iter()
+        .filter(|t| t.starts_with('#') && !vault_map.contains_key(**t))
+        .map(|t| t.trim_start_matches('#'))
+        .collect();
+
+    let is_empty_search = title_terms.is_empty() && tag_terms.is_empty();
 
     if !is_empty_search {
         results.retain(|res| {
-            let lower_stem = res.title.to_lowercase();
-            search_terms.iter().all(|term| {
-                lower_stem.contains(*term) || res.tags.contains(&term.to_string())
-            })
+            let lower_title = res.title.to_lowercase();
+            let matches_title = title_terms.iter().all(|term| lower_title.contains(*term));
+            let matches_tags = tag_terms.iter().all(|term| res.tags.iter().any(|t| t == *term));
+            
+            matches_title && matches_tags
         });
     }
 
     if is_empty_search {
         results.truncate(20);
+    } else {
+        results.truncate(50);
     }
 
     for res in results {
@@ -382,7 +458,9 @@ fn main() {
         let msg = if is_empty_search {
             format!("No markdown files found in {} vault", target_key)
         } else {
-            format!("Searched in {} vault for '{}'", target_key, search_terms.join(" "))
+            let mut all_search_terms = title_terms;
+            all_search_terms.extend(tag_terms.iter().map(|t| *t));
+            format!("Searched in {} vault for '{}'", target_key, all_search_terms.join(" "))
         };
         items.push(Item::new("No matches found").set_subtitle(msg).set_valid(false));
     }

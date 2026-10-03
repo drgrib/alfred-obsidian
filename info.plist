@@ -21,6 +21,19 @@
 				<false/>
 			</dict>
 		</array>
+		<key>DD846745-8DDB-4358-A0E2-D945657DB90A</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>27E8D917-B806-49AB-96EA-DB3AD1961A13</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
 	</dict>
 	<key>createdby</key>
 	<string>drgrib</string>
@@ -32,6 +45,37 @@
 	<string>Obsidian</string>
 	<key>objects</key>
 	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>45</integer>
+				<key>hotmod</key>
+				<integer>524288</integer>
+				<key>hotstring</key>
+				<string>B</string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
 		<dict>
 			<key>config</key>
 			<dict>
@@ -104,14 +148,21 @@
 		<key>103FA7DE-B303-465C-9369-0C45D5340E59</key>
 		<dict>
 			<key>xpos</key>
-			<real>335</real>
+			<real>580</real>
 			<key>ypos</key>
 			<real>30</real>
 		</dict>
 		<key>27E8D917-B806-49AB-96EA-DB3AD1961A13</key>
 		<dict>
 			<key>xpos</key>
-			<real>60</real>
+			<real>305</real>
+			<key>ypos</key>
+			<real>30</real>
+		</dict>
+		<key>DD846745-8DDB-4358-A0E2-D945657DB90A</key>
+		<dict>
+			<key>xpos</key>
+			<real>85</real>
 			<key>ypos</key>
 			<real>30</real>
 		</dict>
