@@ -443,11 +443,30 @@ fn main() {
 
     results.truncate(50);
 
+    // The vault folder name is used as the root label in result subtitles
+    let vault_name = vault_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&clean_key)
+        .to_string();
+
     for res in results {
+        // Show the note's location relative to the vault, without the filename
+        let note_path = Path::new(&res.path);
+        let location = match note_path.strip_prefix(vault_dir) {
+            Ok(relative) => match relative.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => {
+                    format!("{}/{}", vault_name, parent.to_string_lossy())
+                }
+                _ => vault_name.clone(),
+            },
+            Err(_) => vault_name.clone(),
+        };
+
         let subtitle = if res.tags.is_empty() {
-            res.path.clone()
+            location
         } else {
-            format!("{} | #{}", res.path, res.tags.join(" #"))
+            format!("{} | #{}", location, res.tags.join(" #"))
         };
 
         let item = Item::new(res.title)
