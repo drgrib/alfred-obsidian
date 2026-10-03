@@ -7,7 +7,21 @@
 	<key>category</key>
 	<string>Tools</string>
 	<key>connections</key>
-	<dict/>
+	<dict>
+		<key>27E8D917-B806-49AB-96EA-DB3AD1961A13</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>103FA7DE-B303-465C-9369-0C45D5340E59</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+	</dict>
 	<key>createdby</key>
 	<string>drgrib</string>
 	<key>description</key>
@@ -18,6 +32,21 @@
 	<string>Obsidian</string>
 	<key>objects</key>
 	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>openwith</key>
+				<string>/System/Volumes/Data/Applications/Obsidian.app</string>
+				<key>sourcefile</key>
+				<string></string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.openfile</string>
+			<key>uid</key>
+			<string>103FA7DE-B303-465C-9369-0C45D5340E59</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
 		<dict>
 			<key>config</key>
 			<dict>
@@ -46,7 +75,7 @@
 				<key>runningsubtext</key>
 				<string></string>
 				<key>script</key>
-				<string>./alfred-obsidian</string>
+				<string>./alfred-obsidian "$1"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
@@ -54,7 +83,7 @@
 				<key>subtext</key>
 				<string></string>
 				<key>title</key>
-				<string>Search Obsidian Notes</string>
+				<string>Obsidian - Search Notes</string>
 				<key>type</key>
 				<integer>0</integer>
 				<key>withspace</key>
@@ -72,6 +101,13 @@
 	<string></string>
 	<key>uidata</key>
 	<dict>
+		<key>103FA7DE-B303-465C-9369-0C45D5340E59</key>
+		<dict>
+			<key>xpos</key>
+			<real>335</real>
+			<key>ypos</key>
+			<real>30</real>
+		</dict>
 		<key>27E8D917-B806-49AB-96EA-DB3AD1961A13</key>
 		<dict>
 			<key>xpos</key>
