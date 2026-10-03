@@ -26,6 +26,7 @@ struct FileResult {
 #[derive(Serialize, Deserialize)]
 struct VaultCache {
     files: Vec<FileResult>,
+    tag_recency: HashMap<String, SystemTime>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -167,14 +168,14 @@ fn extract_tags(path: &Path) -> Vec<String> {
     tags.into_iter().collect()
 }
 
-fn process_files(dir: &Path, results: &mut Vec<FileResult>, state: &mut State, state_path: &Path) {
+fn process_files(dir: &Path, results: &mut Vec<FileResult>, tag_recency: &mut HashMap<String, SystemTime>, state: &mut State, state_path: &Path) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if !name.starts_with('.') {
-                        process_files(&path, results, state, state_path);
+                        process_files(&path, results, tag_recency, state, state_path);
                     }
                 }
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -184,6 +185,13 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, state: &mut State, s
                         .unwrap_or(SystemTime::UNIX_EPOCH);
 
                     let tags = extract_tags(&path);
+
+                    for tag in &tags {
+                        let entry = tag_recency.entry(tag.clone()).or_insert(SystemTime::UNIX_EPOCH);
+                        if modified > *entry {
+                            *entry = modified;
+                        }
+                    }
 
                     results.push(FileResult {
                         title: stem.to_string(),
@@ -201,6 +209,25 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, state: &mut State, s
                 }
             }
         }
+    }
+}
+
+// Helper to format system time for the subtitle
+fn format_time_ago(time: SystemTime) -> String {
+    let now = SystemTime::now();
+    if let Ok(duration) = now.duration_since(time) {
+        let secs = duration.as_secs();
+        if secs < 60 {
+            "Just now".to_string()
+        } else if secs < 3600 {
+            format!("{}m ago", secs / 60)
+        } else if secs < 86400 {
+            format!("{}h ago", secs / 3600)
+        } else {
+            format!("{}d ago", secs / 86400)
+        }
+    } else {
+        "Unknown".to_string()
     }
 }
 
@@ -225,11 +252,12 @@ fn run_worker(target_key: &str) {
     fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
 
     let mut results = Vec::new();
-    process_files(vault_dir, &mut results, &mut state, &state_path);
+    let mut tag_recency = HashMap::new();
+    process_files(vault_dir, &mut results, &mut tag_recency, &mut state, &state_path);
 
     results.sort_by(|a, b| b.modified.cmp(&a.modified));
 
-    if let Ok(json) = serde_json::to_string(&VaultCache { files: results }) {
+    if let Ok(json) = serde_json::to_string(&VaultCache { files: results, tag_recency }) {
         fs::write(&cache_path, json).ok();
     }
     fs::remove_file(&state_path).ok();
@@ -255,7 +283,6 @@ fn main() {
         return;
     }
 
-    // Preserve the raw query to check for trailing spaces
     let raw_query = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let query = raw_query.trim_start();
     let lower_query = query.to_lowercase();
@@ -346,7 +373,9 @@ fn main() {
         return;
     }
 
-    let mut results = cached_data_opt.unwrap().files;
+    let cached_data = cached_data_opt.unwrap();
+    let mut results = cached_data.files;
+    let tag_recency = cached_data.tag_recency;
     let mut items = Vec::new();
 
     let ends_with_space = raw_query.ends_with(' ');
@@ -356,19 +385,12 @@ fn main() {
     // Tag Autocomplete Mode
     if is_autocompleting_tag {
         let partial_tag = last_term.trim_start_matches('#');
-        let mut tag_counts: HashMap<&String, u32> = HashMap::new();
         
-        for res in &results {
-            for tag in &res.tags {
-                *tag_counts.entry(tag).or_insert(0) += 1;
-            }
-        }
-        
-        let mut matched_tags: Vec<(&String, u32)> = tag_counts.into_iter()
+        let mut matched_tags: Vec<(&String, &SystemTime)> = tag_recency.iter()
             .filter(|(t, _)| t.contains(partial_tag))
             .collect();
             
-        matched_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        matched_tags.sort_by(|a, b| b.1.cmp(a.1));
         
         let prefix = if all_terms.len() > 1 {
             let terms_before = &all_terms[..all_terms.len() - 1];
@@ -377,7 +399,6 @@ fn main() {
             "".to_string()
         };
 
-        // Inject vault routing tags into autocomplete
         let mut matched_vaults: Vec<&String> = vault_map.keys()
             .filter(|k| k.starts_with('#') && k.trim_start_matches('#').contains(partial_tag))
             .collect();
@@ -392,10 +413,11 @@ fn main() {
             );
         }
 
-        for (tag, count) in matched_tags.into_iter().take(30) {
+        for (tag, modified_time) in matched_tags.into_iter().take(30) {
+            let time_ago = format_time_ago(*modified_time);
             items.push(
                 Item::new(format!("#{}", tag))
-                    .set_subtitle(format!("{} notes", count))
+                    .set_subtitle(format!("Last used: {}", time_ago))
                     .set_autocomplete(format!("{}#{} ", prefix, tag))
                     .set_valid(false)
             );
@@ -433,11 +455,7 @@ fn main() {
         });
     }
 
-    if is_empty_search {
-        results.truncate(20);
-    } else {
-        results.truncate(50);
-    }
+    results.truncate(50);
 
     for res in results {
         let subtitle = if res.tags.is_empty() {

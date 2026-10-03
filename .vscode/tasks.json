@@ -2,13 +2,9 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "cargo build release",
+			"label": "Build Alfred Obsidian",
 			"type": "shell",
-			"command": "cargo build --release && cp target/release/alfred-obsidian ./alfred-obsidian && cargo clean",
-			"group": {
-				"kind": "build",
-				"isDefault": true
-			},
+			"command": "cargo build --release --target-dir /tmp/alfred-obsidian-target && cp /tmp/alfred-obsidian-target/release/alfred-obsidian ./alfred-obsidian && rm -rf /tmp/alfred-obsidian-target",
 			"presentation": {
 				"reveal": "always",
 				"panel": "new",
