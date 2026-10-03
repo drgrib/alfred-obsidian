@@ -1,0 +1,9 @@
+[package]
+name = "alfred-obsidian"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alfred_workflow_rs = "1.0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
