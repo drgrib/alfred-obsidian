@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.drgrib.obsidian</string>
+	<key>category</key>
+	<string>Tools</string>
+	<key>connections</key>
+	<dict/>
+	<key>createdby</key>
+	<string>drgrib</string>
+	<key>description</key>
+	<string>Lean, high-speed Alfred workflow for Obsidian</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Obsidian</string>
+	<key>objects</key>
+	<array/>
+	<key>readme</key>
+	<string></string>
+	<key>uidata</key>
+	<dict/>
+	<key>userconfigurationconfig</key>
+	<array/>
+	<key>webaddress</key>
+	<string>https://github.com/drgrib/alfred-obsidian</string>
+</dict>
+</plist>
