@@ -2,10 +2,25 @@ use alfred_workflow_rs::Item;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 
 #[derive(Serialize)]
 struct AlfredOutput {
     items: Vec<Item>,
+}
+
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return path.replacen("~/", &format!("{}/", home), 1);
+        }
+    }
+    path.to_string()
+}
+
+fn path_exists(path: &str) -> bool {
+    let expanded = expand_tilde(path);
+    Path::new(&expanded).exists()
 }
 
 fn main() {
@@ -30,19 +45,37 @@ fn main() {
                 .set_subtitle("Please click 'Configure Workflow...' to set your vault rules.")
                 .set_valid(false)
         );
-    } else {
-        items.push(
-            Item::new("Vault Map Successfully Parsed")
-                .set_subtitle(format!("Found {} routing rules.", vault_map.len()))
+    } else if !vault_map.contains_key("default") {
+         items.push(
+            Item::new("Missing 'default' Vault")
+                .set_subtitle("Your configuration must include a 'default:' path.")
                 .set_valid(false)
         );
-        
+    } else {
         for (key, path) in &vault_map {
-            items.push(
-                Item::new(key.clone())
-                    .set_subtitle(path.clone())
-                    .set_valid(false)
-            );
+            let title = if key == "default" {
+                "Default Vault".to_string()
+            } else {
+                format!("Routed Vault: {}", key)
+            };
+
+            let (subtitle, valid, icon) = if path_exists(path) {
+                (path.clone(), true, None)
+            } else {
+                (format!("Path not found: {}", path), false, Some("⚠️"))
+            };
+
+            let mut item = Item::new(title.clone())
+                .set_subtitle(subtitle)
+                .set_valid(valid);
+            
+            if let Some(i) = icon {
+                 item = Item::new(format!("{} {}", i, title))
+                    .set_subtitle(format!("Path not found: {}", path))
+                    .set_valid(false);
+            }
+
+            items.push(item);
         }
     }
 
