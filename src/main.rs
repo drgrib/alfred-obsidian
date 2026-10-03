@@ -183,14 +183,14 @@ fn extract_tags(path: &Path) -> Vec<String> {
     tags.into_iter().collect()
 }
 
-fn process_files(dir: &Path, results: &mut Vec<FileResult>, tag_recency: &mut HashMap<String, SystemTime>, state: &mut State, state_path: &Path) {
+fn process_files(dir: &Path, results: &mut Vec<FileResult>, old_cache: &HashMap<String, FileResult>, state: &mut State, state_path: &Path) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if !name.starts_with('.') {
-                        process_files(&path, results, tag_recency, state, state_path);
+                        process_files(&path, results, old_cache, state, state_path);
                     }
                 }
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -199,21 +199,20 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, tag_recency: &mut Ha
                         .and_then(|m| m.modified())
                         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-                    let tags = extract_tags(&path);
+                    let path_key = path.to_string_lossy().into_owned();
 
-                    for tag in &tags {
-                        let entry = tag_recency.entry(tag.clone()).or_insert(SystemTime::UNIX_EPOCH);
-                        if modified > *entry {
-                            *entry = modified;
-                        }
-                    }
+                    // Reuse the cached entry when the file is unchanged, otherwise re-parse it
+                    let result = match old_cache.get(&path_key) {
+                        Some(cached) if cached.modified == modified => cached.clone(),
+                        _ => FileResult {
+                            title: stem.to_string(),
+                            path: path.to_string_lossy().into_owned(),
+                            modified,
+                            tags: extract_tags(&path),
+                        },
+                    };
 
-                    results.push(FileResult {
-                        title: stem.to_string(),
-                        path: path.to_string_lossy().into_owned(),
-                        modified,
-                        tags,
-                    });
+                    results.push(result);
 
                     state.progress += 1;
                     if state.progress % 250 == 0 {
@@ -266,11 +265,33 @@ fn run_worker(target_key: &str) {
     state.status = "Indexing vault...".to_string();
     fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
 
+    // Load the existing cache (if any) so unchanged files can be reused without re-reading them
+    let existing_cache: Option<VaultCache> = fs::read_to_string(&cache_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<VaultCache>(&content).ok());
+
+    let mut old_cache: HashMap<String, FileResult> = HashMap::new();
+    if let Some(cache) = existing_cache {
+        for file in cache.files {
+            old_cache.insert(file.path.clone(), file);
+        }
+    }
+
     let mut results = Vec::new();
-    let mut tag_recency = HashMap::new();
-    process_files(vault_dir, &mut results, &mut tag_recency, &mut state, &state_path);
+    process_files(vault_dir, &mut results, &old_cache, &mut state, &state_path);
 
     results.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+    // Rebuild tag recency from the new results so tags that no longer exist are cleared
+    let mut tag_recency: HashMap<String, SystemTime> = HashMap::new();
+    for res in &results {
+        for tag in &res.tags {
+            let entry = tag_recency.entry(tag.clone()).or_insert(SystemTime::UNIX_EPOCH);
+            if res.modified > *entry {
+                *entry = res.modified;
+            }
+        }
+    }
 
     if let Ok(json) = serde_json::to_string(&VaultCache { files: results, tag_recency }) {
         fs::write(&cache_path, json).ok();
@@ -355,6 +376,17 @@ fn main() {
 
     let mut cached_data_opt = None;
     if cache_path.exists() {
+        // Refresh the cache in the background on every run; the existing cache is still
+        // loaded below so the user gets results immediately.
+        Command::new(env::current_exe().unwrap())
+            .arg("worker")
+            .arg(target_key)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok();
+
         if let Ok(file_content) = fs::read_to_string(&cache_path) {
             if let Ok(parsed_data) = serde_json::from_str::<VaultCache>(&file_content) {
                 cached_data_opt = Some(parsed_data);
