@@ -23,7 +23,31 @@
 	<key>uidata</key>
 	<dict/>
 	<key>userconfigurationconfig</key>
-	<array/>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string>default: ~/Documents/ObsidianVault</string>
+				<key>required</key>
+				<true/>
+				<key>trim</key>
+				<true/>
+				<key>verticalsize</key>
+				<integer>3</integer>
+			</dict>
+			<key>description</key>
+			<string>Enter your vault paths as key:path pairs. Use 'default:' for your primary vault, and '#tag:' for routed vaults. One per line.</string>
+			<key>label</key>
+			<string>Vault Map</string>
+			<key>type</key>
+			<string>textarea</string>
+			<key>variable</key>
+			<string>vault_map</string>
+		</dict>
+	</array>
+	<key>version</key>
+	<string></string>
 	<key>webaddress</key>
 	<string>https://github.com/drgrib/alfred-obsidian</string>
 </dict>
