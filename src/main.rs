@@ -1,8 +1,9 @@
 use alfred_workflow_rs::Item;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
@@ -19,6 +20,7 @@ struct FileResult {
     title: String,
     path: String,
     modified: SystemTime,
+    tags: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,6 +86,87 @@ fn count_files(dir: &Path) -> u32 {
     count
 }
 
+fn clean_tag(raw_tag: &str) -> Option<String> {
+    let t = raw_tag.trim().trim_start_matches('#');
+    if t.is_empty() || t.contains(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/') {
+        None
+    } else {
+        Some(t.to_lowercase())
+    }
+}
+
+fn parse_inline_list(val: &str, tags: &mut HashSet<String>) {
+    let clean_val = val.trim_matches(|c| c == '[' || c == ']' || c == ' ');
+    for t in clean_val.split(',') {
+        if let Some(clean) = clean_tag(t) {
+            tags.insert(clean);
+        }
+    }
+}
+
+fn extract_tags(path: &Path) -> Vec<String> {
+    let mut tags = HashSet::new();
+    
+    if let Ok(file) = fs::File::open(path) {
+        let reader = BufReader::new(file);
+        
+        let mut in_frontmatter = false;
+        let mut line_count = 0;
+        let mut inside_tags_block = false;
+
+        for line_result in reader.lines() {
+            let line = match line_result {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            
+            line_count += 1;
+            let trimmed = line.trim();
+
+            if line_count == 1 && trimmed == "---" {
+                in_frontmatter = true;
+                continue;
+            } else if in_frontmatter && trimmed == "---" {
+                in_frontmatter = false;
+                inside_tags_block = false;
+                continue;
+            }
+
+            if in_frontmatter {
+                if trimmed.starts_with("tags:") || trimmed.starts_with("tag:") {
+                    let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        let val = parts[1].trim();
+                        if val.is_empty() {
+                            inside_tags_block = true;
+                        } else {
+                            parse_inline_list(val, &mut tags);
+                            inside_tags_block = false;
+                        }
+                    }
+                } else if inside_tags_block && trimmed.starts_with('-') {
+                    let val = trimmed.trim_start_matches('-').trim();
+                    if let Some(clean) = clean_tag(val) {
+                        tags.insert(clean);
+                    }
+                } else if !trimmed.is_empty() {
+                    inside_tags_block = false;
+                }
+            } else {
+                for word in line.split_whitespace() {
+                    if word.starts_with('#') {
+                        if let Some(clean) = clean_tag(word) {
+                            tags.insert(clean);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    tags.into_iter().collect()
+}
+
 fn process_files(dir: &Path, results: &mut Vec<FileResult>, state: &mut State, state_path: &Path) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -100,14 +183,16 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, state: &mut State, s
                         .and_then(|m| m.modified())
                         .unwrap_or(SystemTime::UNIX_EPOCH);
 
+                    let tags = extract_tags(&path);
+
                     results.push(FileResult {
                         title: stem.to_string(),
                         path: path.to_string_lossy().into_owned(),
                         modified,
+                        tags,
                     });
 
                     state.progress += 1;
-                    // Write to disk every 250 files to update Alfred without severe disk thrashing
                     if state.progress % 250 == 0 {
                         if let Ok(json) = serde_json::to_string(state) {
                             fs::write(state_path, json).ok();
@@ -132,23 +217,18 @@ fn run_worker(target_key: &str) {
     let state_path = cache_dir.join(format!("state_{}.json", clean_key));
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
 
-    // Initial state
     let mut state = State { progress: 0, total: 0, status: "Counting files...".to_string() };
     fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
 
-    // Count phase
     state.total = count_files(vault_dir);
     state.status = "Indexing vault...".to_string();
     fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
 
-    // Process phase
     let mut results = Vec::new();
     process_files(vault_dir, &mut results, &mut state, &state_path);
 
-    // Sort newest first
     results.sort_by(|a, b| b.modified.cmp(&a.modified));
 
-    // Save final cache and delete state
     if let Ok(json) = serde_json::to_string(&VaultCache { files: results }) {
         fs::write(&cache_path, json).ok();
     }
@@ -158,7 +238,6 @@ fn run_worker(target_key: &str) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     
-    // Check if being called as the background worker
     if args.len() >= 3 && args[1] == "worker" {
         run_worker(&args[2]);
         return;
@@ -176,7 +255,6 @@ fn main() {
         return;
     }
 
-    // Extract search query correctly handling "$1"
     let query = args.get(1).map(|s| s.trim()).unwrap_or("");
     let lower_query = query.to_lowercase();
     let all_terms: Vec<&str> = lower_query.split_whitespace().collect();
@@ -209,7 +287,6 @@ fn main() {
     let state_path = cache_dir.join(format!("state_{}.json", clean_key));
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
 
-    // 1. Check if the worker is actively running
     if state_path.exists() {
         let data = fs::read_to_string(&state_path).unwrap_or_default();
         let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Initializing...".to_string() });
@@ -221,19 +298,31 @@ fn main() {
         };
 
         let output = AlfredOutput {
-            rerun: Some(0.2), // Refresh UI every 0.2s
+            rerun: Some(0.2), 
             items: vec![
                 Item::new(format!("{} {:.0}%", state.status, percentage))
                     .set_subtitle(format!("{} of {} files parsed. Please wait...", state.progress, state.total))
-                    .set_valid(false) // Blocks the Enter key
+                    .set_valid(false)
             ]
         };
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
     }
 
-    // 2. Check if cache needs to be built
-    if !cache_path.exists() {
+    let mut cached_data_opt = None;
+    if cache_path.exists() {
+        if let Ok(file_content) = fs::read_to_string(&cache_path) {
+            if let Ok(parsed_data) = serde_json::from_str::<VaultCache>(&file_content) {
+                cached_data_opt = Some(parsed_data);
+            } else {
+                fs::remove_file(&cache_path).ok();
+            }
+        } else {
+            fs::remove_file(&cache_path).ok();
+        }
+    }
+
+    if cached_data_opt.is_none() {
         Command::new(env::current_exe().unwrap())
             .arg("worker")
             .arg(target_key)
@@ -247,7 +336,7 @@ fn main() {
             rerun: Some(0.2),
             items: vec![
                 Item::new("Starting Indexer...")
-                    .set_subtitle("Initializing background worker. Please wait...")
+                    .set_subtitle("Initializing background worker to build cache. Please wait...")
                     .set_valid(false)
             ]
         };
@@ -255,44 +344,47 @@ fn main() {
         return;
     }
 
-    // 3. Cache exists, load and filter it
     let mut items = Vec::new();
     let search_terms: Vec<&str> = all_terms.into_iter().filter(|t| !t.starts_with('#')).collect();
     let is_empty_search = search_terms.is_empty();
 
-    if let Ok(file_content) = fs::read_to_string(&cache_path) {
-        if let Ok(cached_data) = serde_json::from_str::<VaultCache>(&file_content) {
-            let mut results = cached_data.files;
+    let mut results = cached_data_opt.unwrap().files;
 
-            if !is_empty_search {
-                results.retain(|res| {
-                    let lower_stem = res.title.to_lowercase();
-                    search_terms.iter().all(|term| lower_stem.contains(*term))
-                });
-            }
+    if !is_empty_search {
+        results.retain(|res| {
+            let lower_stem = res.title.to_lowercase();
+            search_terms.iter().all(|term| {
+                lower_stem.contains(*term) || res.tags.contains(&term.to_string())
+            })
+        });
+    }
 
-            if is_empty_search {
-                results.truncate(20);
-            }
+    if is_empty_search {
+        results.truncate(20);
+    }
 
-            for res in results {
-                items.push(
-                    Item::new(res.title)
-                        .set_subtitle(res.path.clone())
-                        .set_arg(res.path)
-                        .set_valid(true)
-                );
-            }
+    for res in results {
+        let subtitle = if res.tags.is_empty() {
+            res.path.clone()
+        } else {
+            format!("{} | #{}", res.path, res.tags.join(" #"))
+        };
 
-            if items.is_empty() {
-                let msg = if is_empty_search {
-                    format!("No markdown files found in {} vault", target_key)
-                } else {
-                    format!("Searched in {} vault for '{}'", target_key, search_terms.join(" "))
-                };
-                items.push(Item::new("No matches found").set_subtitle(msg).set_valid(false));
-            }
-        }
+        let item = Item::new(res.title)
+            .set_subtitle(subtitle)
+            .set_arg(res.path)
+            .set_valid(true);
+        
+        items.push(item);
+    }
+
+    if items.is_empty() {
+        let msg = if is_empty_search {
+            format!("No markdown files found in {} vault", target_key)
+        } else {
+            format!("Searched in {} vault for '{}'", target_key, search_terms.join(" "))
+        };
+        items.push(Item::new("No matches found").set_subtitle(msg).set_valid(false));
     }
 
     let output = AlfredOutput { rerun: None, items };
