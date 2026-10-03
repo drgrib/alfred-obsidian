@@ -399,20 +399,6 @@ fn main() {
             "".to_string()
         };
 
-        let mut matched_vaults: Vec<&String> = vault_map.keys()
-            .filter(|k| k.starts_with('#') && k.trim_start_matches('#').contains(partial_tag))
-            .collect();
-        matched_vaults.sort();
-
-        for vault_key in matched_vaults {
-            items.push(
-                Item::new(vault_key.clone())
-                    .set_subtitle("Route search to this vault")
-                    .set_autocomplete(format!("{}{}", prefix, vault_key))
-                    .set_valid(false)
-            );
-        }
-
         for (tag, modified_time) in matched_tags.into_iter().take(30) {
             let time_ago = format_time_ago(*modified_time);
             items.push(
