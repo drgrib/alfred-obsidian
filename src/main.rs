@@ -8,6 +8,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
+fn url_encode(input: &str) -> String {
+    let mut encoded = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    encoded
+}
+
 #[derive(Serialize)]
 struct AlfredOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -469,9 +484,17 @@ fn main() {
             format!("{} | #{}", location, res.tags.join(" #"))
         };
 
+        // Obsidian Advanced URI expects the note path relative to the vault root, without the .md extension
+        let arg_path = note_path
+            .strip_prefix(vault_dir)
+            .unwrap_or(note_path)
+            .to_string_lossy()
+            .trim_end_matches(".md")
+            .to_string();
+
         let item = Item::new(res.title)
             .set_subtitle(subtitle)
-            .set_arg(res.path)
+            .set_arg(url_encode(&arg_path))
             .set_valid(true);
         
         items.push(item);
