@@ -352,7 +352,36 @@ fn main() {
     let state_path = cache_dir.join(format!("state_{}.json", clean_key));
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
 
-    if state_path.exists() {
+    // Load the cache first so results can be served immediately on every keystroke
+    let mut cached_data_opt = None;
+    if cache_path.exists() {
+        if let Ok(file_content) = fs::read_to_string(&cache_path) {
+            if let Ok(parsed_data) = serde_json::from_str::<VaultCache>(&file_content) {
+                cached_data_opt = Some(parsed_data);
+            } else {
+                fs::remove_file(&cache_path).ok();
+            }
+        } else {
+            fs::remove_file(&cache_path).ok();
+        }
+    }
+
+    // With a usable cache, only refresh on the first launch (empty query) so that
+    // typing never triggers a reindex
+    if cached_data_opt.is_some() && query.is_empty() {
+        Command::new(env::current_exe().unwrap())
+            .arg("worker")
+            .arg(target_key)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok();
+    }
+
+    // Only show the progress screen when there is no cache to serve; otherwise the
+    // worker finishes invisibly in the background
+    if cached_data_opt.is_none() && state_path.exists() {
         let data = fs::read_to_string(&state_path).unwrap_or_default();
         let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Initializing...".to_string() });
         
@@ -374,31 +403,8 @@ fn main() {
         return;
     }
 
-    let mut cached_data_opt = None;
-    if cache_path.exists() {
-        // Refresh the cache in the background on every run; the existing cache is still
-        // loaded below so the user gets results immediately.
-        Command::new(env::current_exe().unwrap())
-            .arg("worker")
-            .arg(target_key)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok();
-
-        if let Ok(file_content) = fs::read_to_string(&cache_path) {
-            if let Ok(parsed_data) = serde_json::from_str::<VaultCache>(&file_content) {
-                cached_data_opt = Some(parsed_data);
-            } else {
-                fs::remove_file(&cache_path).ok();
-            }
-        } else {
-            fs::remove_file(&cache_path).ok();
-        }
-    }
-
-    if cached_data_opt.is_none() {
+    // Nothing cached and no worker running: start one and show the progress UI
+    if cached_data_opt.is_none() && !state_path.exists() {
         Command::new(env::current_exe().unwrap())
             .arg("worker")
             .arg(target_key)
