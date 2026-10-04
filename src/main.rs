@@ -603,14 +603,27 @@ fn main() {
     }
 
     if items.is_empty() {
-        let msg = if is_empty_search {
-            format!("No markdown files found in {} vault", target_key)
+        if is_create_only && is_empty_search {
+            items.push(
+                Item::new("Create a new note")
+                    .set_subtitle("Enter a title or #tags")
+                    .set_valid(false)
+            );
+        } else if is_empty_search {
+            items.push(
+                Item::new("No matches found")
+                    .set_subtitle(format!("No markdown files found in {} vault", target_key))
+                    .set_valid(false)
+            );
         } else {
             let mut all_search_terms = title_terms;
             all_search_terms.extend(tag_terms.iter().map(|t| *t));
-            format!("Searched in {} vault for '{}'", target_key, all_search_terms.join(" "))
-        };
-        items.push(Item::new("No matches found").set_subtitle(msg).set_valid(false));
+            items.push(
+                Item::new("No matches found")
+                    .set_subtitle(format!("Searched in {} vault for '{}'", target_key, all_search_terms.join(" ")))
+                    .set_valid(false)
+            );
+        }
     }
 
     let output = AlfredOutput { rerun: None, items };
