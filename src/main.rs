@@ -548,7 +548,7 @@ fn main() {
 
             let item = Item::new(res.title.clone())
                 .set_subtitle(subtitle)
-                .set_arg(format!("obsidian://advanced-uri?filepath={}", url_encode(&arg_path)))
+                .set_arg(format!("obsidian://advanced-uri?filepath={}|{}", url_encode(&arg_path), res.title))
                 .set_valid(true);
         
             items.push(item);
@@ -583,10 +583,11 @@ fn main() {
             };
 
             let create_uri = format!(
-                "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}",
+                "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}|{}",
                 url_encode(&vault_name),
                 url_encode(&title_string),
-                url_encode(&body_string)
+                url_encode(&body_string),
+                title_string
             );
 
             Item::new(format!("Create \"{}\"", title_string))
