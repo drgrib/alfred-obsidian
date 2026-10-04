@@ -12,6 +12,16 @@
 		<array>
 			<dict>
 				<key>destinationuid</key>
+				<string>64CDE9CC-FC21-4978-B4CC-3721F8C3637F</string>
+				<key>modifiers</key>
+				<integer>131072</integer>
+				<key>modifiersubtext</key>
+				<string>Paste Link to Note</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
 				<string>F2106014-8783-4327-AF03-A5E9725AD76D</string>
 				<key>modifiers</key>
 				<integer>0</integer>
@@ -31,8 +41,31 @@
 				<false/>
 			</dict>
 		</array>
+		<key>64CDE9CC-FC21-4978-B4CC-3721F8C3637F</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>D41309CA-5E92-4922-A348-301891A7A3D3</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
 		<key>715BF4A3-E727-479D-8C1C-FDF4267C8013</key>
 		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>64CDE9CC-FC21-4978-B4CC-3721F8C3637F</string>
+				<key>modifiers</key>
+				<integer>131072</integer>
+				<key>modifiersubtext</key>
+				<string>Paste Link to Note</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
 			<dict>
 				<key>destinationuid</key>
 				<string>F2106014-8783-4327-AF03-A5E9725AD76D</string>
@@ -236,6 +269,46 @@
 		<dict>
 			<key>config</key>
 			<dict>
+				<key>autopaste</key>
+				<true/>
+				<key>clipboardtext</key>
+				<string>[[{query}]]</string>
+				<key>ignoredynamicplaceholders</key>
+				<false/>
+				<key>transient</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.clipboard</string>
+			<key>uid</key>
+			<string>D41309CA-5E92-4922-A348-301891A7A3D3</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>matchmode</key>
+				<integer>1</integer>
+				<key>matchstring</key>
+				<string>([^\|]+)\|([^\|]*)</string>
+				<key>regexcaseinsensitive</key>
+				<false/>
+				<key>regexmultiline</key>
+				<false/>
+				<key>replacestring</key>
+				<string>$2</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.utility.replace</string>
+			<key>uid</key>
+			<string>64CDE9CC-FC21-4978-B4CC-3721F8C3637F</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
 				<key>concurrently</key>
 				<false/>
 				<key>escaping</key>
@@ -259,21 +332,31 @@
 		<dict>
 			<key>config</key>
 			<dict>
-				<key>matchmode</key>
-				<integer>1</integer>
-				<key>matchstring</key>
-				<string>([^\|]+)\|([^\|]*)</string>
-				<key>regexcaseinsensitive</key>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
 				<false/>
-				<key>regexmultiline</key>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>0</integer>
+				<key>hotmod</key>
+				<integer>0</integer>
+				<key>hotstring</key>
+				<string></string>
+				<key>leftcursor</key>
 				<false/>
-				<key>replacestring</key>
-				<string>$1</string>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
 			</dict>
 			<key>type</key>
-			<string>alfred.workflow.utility.replace</string>
+			<string>alfred.workflow.trigger.hotkey</string>
 			<key>uid</key>
-			<string>F2106014-8783-4327-AF03-A5E9725AD76D</string>
+			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
@@ -329,31 +412,21 @@
 		<dict>
 			<key>config</key>
 			<dict>
-				<key>action</key>
-				<integer>0</integer>
-				<key>argument</key>
-				<integer>0</integer>
-				<key>focusedappvariable</key>
+				<key>matchmode</key>
+				<integer>1</integer>
+				<key>matchstring</key>
+				<string>([^\|]+)\|([^\|]*)</string>
+				<key>regexcaseinsensitive</key>
 				<false/>
-				<key>focusedappvariablename</key>
-				<string></string>
-				<key>hotkey</key>
-				<integer>0</integer>
-				<key>hotmod</key>
-				<integer>0</integer>
-				<key>hotstring</key>
-				<string></string>
-				<key>leftcursor</key>
+				<key>regexmultiline</key>
 				<false/>
-				<key>modsmode</key>
-				<integer>0</integer>
-				<key>relatedAppsMode</key>
-				<integer>0</integer>
+				<key>replacestring</key>
+				<string>$1</string>
 			</dict>
 			<key>type</key>
-			<string>alfred.workflow.trigger.hotkey</string>
+			<string>alfred.workflow.utility.replace</string>
 			<key>uid</key>
-			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
+			<string>F2106014-8783-4327-AF03-A5E9725AD76D</string>
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
@@ -496,9 +569,16 @@
 		<key>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</key>
 		<dict>
 			<key>xpos</key>
-			<real>585</real>
+			<real>590</real>
 			<key>ypos</key>
-			<real>250</real>
+			<real>330</real>
+		</dict>
+		<key>64CDE9CC-FC21-4978-B4CC-3721F8C3637F</key>
+		<dict>
+			<key>xpos</key>
+			<real>520</real>
+			<key>ypos</key>
+			<real>90</real>
 		</dict>
 		<key>715BF4A3-E727-479D-8C1C-FDF4267C8013</key>
 		<dict>
@@ -510,9 +590,9 @@
 		<key>802049F5-A61F-4E81-94F4-85E105707F0A</key>
 		<dict>
 			<key>xpos</key>
-			<real>515</real>
+			<real>520</real>
 			<key>ypos</key>
-			<real>280</real>
+			<real>360</real>
 		</dict>
 		<key>8C004A2E-722E-4761-8822-C357E61E757A</key>
 		<dict>
@@ -531,9 +611,9 @@
 		<key>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</key>
 		<dict>
 			<key>xpos</key>
-			<real>585</real>
+			<real>590</real>
 			<key>ypos</key>
-			<real>105</real>
+			<real>195</real>
 		</dict>
 		<key>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</key>
 		<dict>
@@ -541,6 +621,13 @@
 			<real>30</real>
 			<key>ypos</key>
 			<real>15</real>
+		</dict>
+		<key>D41309CA-5E92-4922-A348-301891A7A3D3</key>
+		<dict>
+			<key>xpos</key>
+			<real>590</real>
+			<key>ypos</key>
+			<real>60</real>
 		</dict>
 		<key>DD846745-8DDB-4358-A0E2-D945657DB90A</key>
 		<dict>
@@ -552,9 +639,9 @@
 		<key>F2106014-8783-4327-AF03-A5E9725AD76D</key>
 		<dict>
 			<key>xpos</key>
-			<real>515</real>
+			<real>520</real>
 			<key>ypos</key>
-			<real>135</real>
+			<real>225</real>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>
