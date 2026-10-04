@@ -319,8 +319,10 @@ fn main() {
         return;
     }
 
-    // args[1] is the mode ("search" / "createsearch"), args[2] is the query
-    let allow_create = args.get(1).map(|s| s.as_str()).unwrap_or("") == "createsearch";
+    // args[1] is the mode ("search" / "createsearch" / "create"), args[2] is the query
+    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let allow_create = mode == "createsearch" || mode == "create";
+    let is_create_only = mode == "create";
     let raw_query = args.get(2).map(|s| s.as_str()).unwrap_or("");
     let query = raw_query.trim_start();
     let lower_query = query.to_lowercase();
@@ -497,7 +499,7 @@ fn main() {
         .iter()
         .any(|res| res.title.eq_ignore_ascii_case(&title_string));
 
-    if !is_empty_search {
+    if !is_create_only && !is_empty_search {
         results.retain(|res| {
             let lower_title = res.title.to_lowercase();
             let matches_title = title_terms.iter().all(|term| lower_title.contains(*term));
@@ -516,39 +518,41 @@ fn main() {
         .unwrap_or(&clean_key)
         .to_string();
 
-    for res in results {
-        // Show the note's location relative to the vault, without the filename
-        let note_path = Path::new(&res.path);
-        let location = match note_path.strip_prefix(vault_dir) {
-            Ok(relative) => match relative.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => {
-                    format!("{}/{}", vault_name, parent.to_string_lossy())
-                }
-                _ => vault_name.clone(),
-            },
-            Err(_) => vault_name.clone(),
-        };
+    if !is_create_only {
+        for res in results.iter().take(50) {
+            // Show the note's location relative to the vault, without the filename
+            let note_path = Path::new(&res.path);
+            let location = match note_path.strip_prefix(vault_dir) {
+                Ok(relative) => match relative.parent() {
+                    Some(parent) if !parent.as_os_str().is_empty() => {
+                        format!("{}/{}", vault_name, parent.to_string_lossy())
+                    }
+                    _ => vault_name.clone(),
+                },
+                Err(_) => vault_name.clone(),
+            };
 
-        let subtitle = if res.tags.is_empty() {
-            location
-        } else {
-            format!("{} | #{}", location, res.tags.join(" #"))
-        };
+            let subtitle = if res.tags.is_empty() {
+                location
+            } else {
+                format!("{} | #{}", location, res.tags.join(" #"))
+            };
 
-        // Obsidian Advanced URI expects the note path relative to the vault root, without the .md extension
-        let arg_path = note_path
-            .strip_prefix(vault_dir)
-            .unwrap_or(note_path)
-            .to_string_lossy()
-            .trim_end_matches(".md")
-            .to_string();
+            // Obsidian Advanced URI expects the note path relative to the vault root, without the .md extension
+            let arg_path = note_path
+                .strip_prefix(vault_dir)
+                .unwrap_or(note_path)
+                .to_string_lossy()
+                .trim_end_matches(".md")
+                .to_string();
 
-        let item = Item::new(res.title)
-            .set_subtitle(subtitle)
-            .set_arg(format!("obsidian://advanced-uri?filepath={}", url_encode(&arg_path)))
-            .set_valid(true);
+            let item = Item::new(res.title.clone())
+                .set_subtitle(subtitle)
+                .set_arg(format!("obsidian://advanced-uri?filepath={}", url_encode(&arg_path)))
+                .set_valid(true);
         
-        items.push(item);
+            items.push(item);
+        }
     }
 
     // Offer to open the existing note, or create a new one with the tags written into the body
@@ -591,7 +595,7 @@ fn main() {
                 .set_valid(true)
         };
 
-        if items.len() >= 2 {
+        if !is_create_only && items.len() >= 2 {
             items.insert(2, create_item);
         } else {
             items.push(create_item);

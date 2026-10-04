@@ -54,6 +54,42 @@
 				<false/>
 			</dict>
 		</array>
+		<key>8C004A2E-722E-4761-8822-C357E61E757A</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>986B0CF5-F3D8-4653-B5DC-7ADE5A904D66</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>986B0CF5-F3D8-4653-B5DC-7ADE5A904D66</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</string>
+				<key>modifiers</key>
+				<integer>1048576</integer>
+				<key>modifiersubtext</key>
+				<string>Open in Pop Out Window</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
 		<key>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</key>
 		<array>
 			<dict>
@@ -107,6 +143,109 @@
 				<key>escaping</key>
 				<integer>102</integer>
 				<key>keyword</key>
+				<string>obsidiancreatesearch</string>
+				<key>queuedelaycustom</key>
+				<integer>3</integer>
+				<key>queuedelayimmediatelyinitially</key>
+				<true/>
+				<key>queuedelaymode</key>
+				<integer>0</integer>
+				<key>queuemode</key>
+				<integer>1</integer>
+				<key>runningsubtext</key>
+				<string></string>
+				<key>script</key>
+				<string>./alfred-obsidian createsearch "$1"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>subtext</key>
+				<string></string>
+				<key>title</key>
+				<string>Obsidian Create/Search</string>
+				<key>type</key>
+				<integer>0</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>715BF4A3-E727-479D-8C1C-FDF4267C8013</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>1</integer>
+				<key>hotmod</key>
+				<integer>524288</integer>
+				<key>hotstring</key>
+				<string>O</string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>102</integer>
+				<key>script</key>
+				<string>open "$1&amp;openmode=true"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>alfredfiltersresults</key>
+				<false/>
+				<key>alfredfiltersresultsmatchmode</key>
+				<integer>0</integer>
+				<key>argumenttreatemptyqueryasnil</key>
+				<true/>
+				<key>argumenttrimmode</key>
+				<integer>0</integer>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>102</integer>
+				<key>keyword</key>
 				<string>obsidiansearch</string>
 				<key>queuedelaycustom</key>
 				<integer>3</integer>
@@ -143,60 +282,6 @@
 		<dict>
 			<key>config</key>
 			<dict>
-				<key>action</key>
-				<integer>0</integer>
-				<key>argument</key>
-				<integer>0</integer>
-				<key>focusedappvariable</key>
-				<false/>
-				<key>focusedappvariablename</key>
-				<string></string>
-				<key>hotkey</key>
-				<integer>0</integer>
-				<key>hotmod</key>
-				<integer>0</integer>
-				<key>hotstring</key>
-				<string></string>
-				<key>leftcursor</key>
-				<false/>
-				<key>modsmode</key>
-				<integer>0</integer>
-				<key>relatedAppsMode</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.trigger.hotkey</string>
-			<key>uid</key>
-			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<false/>
-				<key>escaping</key>
-				<integer>102</integer>
-				<key>script</key>
-				<string>open "$1&amp;openmode=true"</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
 				<key>concurrently</key>
 				<false/>
 				<key>escaping</key>
@@ -229,11 +314,11 @@
 				<key>focusedappvariablename</key>
 				<string></string>
 				<key>hotkey</key>
-				<integer>1</integer>
+				<integer>0</integer>
 				<key>hotmod</key>
-				<integer>524288</integer>
+				<integer>0</integer>
 				<key>hotstring</key>
-				<string>O</string>
+				<string></string>
 				<key>leftcursor</key>
 				<false/>
 				<key>modsmode</key>
@@ -244,7 +329,7 @@
 			<key>type</key>
 			<string>alfred.workflow.trigger.hotkey</string>
 			<key>uid</key>
-			<string>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</string>
+			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
@@ -264,7 +349,7 @@
 				<key>escaping</key>
 				<integer>102</integer>
 				<key>keyword</key>
-				<string>obsidiancreatesearch</string>
+				<string>obsidiancreate</string>
 				<key>queuedelaycustom</key>
 				<integer>3</integer>
 				<key>queuedelayimmediatelyinitially</key>
@@ -276,7 +361,7 @@
 				<key>runningsubtext</key>
 				<string></string>
 				<key>script</key>
-				<string>./alfred-obsidian createsearch "$1"</string>
+				<string>./alfred-obsidian create "$1"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
@@ -284,7 +369,7 @@
 				<key>subtext</key>
 				<string></string>
 				<key>title</key>
-				<string>Obsidian Create/Search</string>
+				<string>Obsidian Create</string>
 				<key>type</key>
 				<integer>0</integer>
 				<key>withspace</key>
@@ -293,9 +378,40 @@
 			<key>type</key>
 			<string>alfred.workflow.input.scriptfilter</string>
 			<key>uid</key>
-			<string>715BF4A3-E727-479D-8C1C-FDF4267C8013</string>
+			<string>986B0CF5-F3D8-4653-B5DC-7ADE5A904D66</string>
 			<key>version</key>
 			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>0</integer>
+				<key>hotmod</key>
+				<integer>0</integer>
+				<key>hotstring</key>
+				<string></string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>8C004A2E-722E-4761-8822-C357E61E757A</string>
+			<key>version</key>
+			<integer>2</integer>
 		</dict>
 	</array>
 	<key>readme</key>
@@ -305,44 +421,58 @@
 		<key>27E8D917-B806-49AB-96EA-DB3AD1961A13</key>
 		<dict>
 			<key>xpos</key>
-			<real>245</real>
+			<real>190</real>
 			<key>ypos</key>
-			<real>30</real>
+			<real>195</real>
 		</dict>
 		<key>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</key>
 		<dict>
 			<key>xpos</key>
-			<real>540</real>
+			<real>550</real>
 			<key>ypos</key>
-			<real>220</real>
+			<real>195</real>
 		</dict>
 		<key>715BF4A3-E727-479D-8C1C-FDF4267C8013</key>
 		<dict>
 			<key>xpos</key>
-			<real>245</real>
+			<real>185</real>
 			<key>ypos</key>
-			<real>295</real>
+			<real>15</real>
+		</dict>
+		<key>8C004A2E-722E-4761-8822-C357E61E757A</key>
+		<dict>
+			<key>xpos</key>
+			<real>30</real>
+			<key>ypos</key>
+			<real>380</real>
+		</dict>
+		<key>986B0CF5-F3D8-4653-B5DC-7ADE5A904D66</key>
+		<dict>
+			<key>xpos</key>
+			<real>190</real>
+			<key>ypos</key>
+			<real>380</real>
 		</dict>
 		<key>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</key>
 		<dict>
 			<key>xpos</key>
-			<real>540</real>
+			<real>550</real>
 			<key>ypos</key>
-			<real>75</real>
+			<real>50</real>
 		</dict>
 		<key>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</key>
 		<dict>
 			<key>xpos</key>
-			<real>90</real>
+			<real>30</real>
 			<key>ypos</key>
-			<real>295</real>
+			<real>15</real>
 		</dict>
 		<key>DD846745-8DDB-4358-A0E2-D945657DB90A</key>
 		<dict>
 			<key>xpos</key>
-			<real>85</real>
-			<key>ypos</key>
 			<real>30</real>
+			<key>ypos</key>
+			<real>195</real>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>
