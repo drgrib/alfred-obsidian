@@ -31,6 +31,42 @@
 				<false/>
 			</dict>
 		</array>
+		<key>715BF4A3-E727-479D-8C1C-FDF4267C8013</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</string>
+				<key>modifiers</key>
+				<integer>1048576</integer>
+				<key>modifiersubtext</key>
+				<string>Open in Pop Out Window</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>715BF4A3-E727-479D-8C1C-FDF4267C8013</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
 		<key>DD846745-8DDB-4358-A0E2-D945657DB90A</key>
 		<array>
 			<dict>
@@ -83,7 +119,7 @@
 				<key>runningsubtext</key>
 				<string></string>
 				<key>script</key>
-				<string>./alfred-obsidian "$1"</string>
+				<string>./alfred-obsidian search "$1"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
@@ -107,12 +143,43 @@
 		<dict>
 			<key>config</key>
 			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>0</integer>
+				<key>hotmod</key>
+				<integer>0</integer>
+				<key>hotstring</key>
+				<string></string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
 				<key>concurrently</key>
 				<false/>
 				<key>escaping</key>
 				<integer>102</integer>
 				<key>script</key>
-				<string>open "obsidian://advanced-uri?filepath=$1&amp;openmode=true"</string>
+				<string>open "$1&amp;openmode=true"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
@@ -124,6 +191,29 @@
 			<string>alfred.workflow.action.script</string>
 			<key>uid</key>
 			<string>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>102</integer>
+				<key>script</key>
+				<string>open "$1&amp;openmode=window"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</string>
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
@@ -154,32 +244,58 @@
 			<key>type</key>
 			<string>alfred.workflow.trigger.hotkey</string>
 			<key>uid</key>
-			<string>DD846745-8DDB-4358-A0E2-D945657DB90A</string>
+			<string>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</string>
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
 		<dict>
 			<key>config</key>
 			<dict>
-				<key>concurrently</key>
+				<key>alfredfiltersresults</key>
 				<false/>
+				<key>alfredfiltersresultsmatchmode</key>
+				<integer>0</integer>
+				<key>argumenttreatemptyqueryasnil</key>
+				<true/>
+				<key>argumenttrimmode</key>
+				<integer>0</integer>
+				<key>argumenttype</key>
+				<integer>1</integer>
 				<key>escaping</key>
 				<integer>102</integer>
+				<key>keyword</key>
+				<string>obsidiancreatesearch</string>
+				<key>queuedelaycustom</key>
+				<integer>3</integer>
+				<key>queuedelayimmediatelyinitially</key>
+				<true/>
+				<key>queuedelaymode</key>
+				<integer>0</integer>
+				<key>queuemode</key>
+				<integer>1</integer>
+				<key>runningsubtext</key>
+				<string></string>
 				<key>script</key>
-				<string>open "obsidian://advanced-uri?filepath=$1&amp;openmode=window"</string>
+				<string>./alfred-obsidian createsearch "$1"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
 				<string></string>
+				<key>subtext</key>
+				<string></string>
+				<key>title</key>
+				<string>Obsidian Create/Search</string>
 				<key>type</key>
 				<integer>0</integer>
+				<key>withspace</key>
+				<true/>
 			</dict>
 			<key>type</key>
-			<string>alfred.workflow.action.script</string>
+			<string>alfred.workflow.input.scriptfilter</string>
 			<key>uid</key>
-			<string>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</string>
+			<string>715BF4A3-E727-479D-8C1C-FDF4267C8013</string>
 			<key>version</key>
-			<integer>2</integer>
+			<integer>3</integer>
 		</dict>
 	</array>
 	<key>readme</key>
@@ -189,23 +305,37 @@
 		<key>27E8D917-B806-49AB-96EA-DB3AD1961A13</key>
 		<dict>
 			<key>xpos</key>
-			<real>305</real>
+			<real>245</real>
 			<key>ypos</key>
 			<real>30</real>
 		</dict>
 		<key>4D7DAFA8-DAF4-49DE-ADD3-CD7027785B9A</key>
 		<dict>
 			<key>xpos</key>
-			<real>545</real>
+			<real>540</real>
 			<key>ypos</key>
-			<real>200</real>
+			<real>220</real>
+		</dict>
+		<key>715BF4A3-E727-479D-8C1C-FDF4267C8013</key>
+		<dict>
+			<key>xpos</key>
+			<real>245</real>
+			<key>ypos</key>
+			<real>295</real>
 		</dict>
 		<key>9D8B35BE-ABFD-4BFD-AECE-FC9D7B6031DC</key>
 		<dict>
 			<key>xpos</key>
-			<real>545</real>
+			<real>540</real>
 			<key>ypos</key>
-			<real>30</real>
+			<real>75</real>
+		</dict>
+		<key>A0B138AF-B944-4FD9-ABC2-4444CB01DEB8</key>
+		<dict>
+			<key>xpos</key>
+			<real>90</real>
+			<key>ypos</key>
+			<real>295</real>
 		</dict>
 		<key>DD846745-8DDB-4358-A0E2-D945657DB90A</key>
 		<dict>

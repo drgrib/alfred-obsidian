@@ -319,7 +319,9 @@ fn main() {
         return;
     }
 
-    let raw_query = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    // args[1] is the mode ("search" / "createsearch"), args[2] is the query
+    let allow_create = args.get(1).map(|s| s.as_str()).unwrap_or("") == "createsearch";
+    let raw_query = args.get(2).map(|s| s.as_str()).unwrap_or("");
     let query = raw_query.trim_start();
     let lower_query = query.to_lowercase();
     let all_terms: Vec<&str> = lower_query.split_whitespace().collect();
@@ -532,10 +534,48 @@ fn main() {
 
         let item = Item::new(res.title)
             .set_subtitle(subtitle)
-            .set_arg(url_encode(&arg_path))
+            .set_arg(format!("obsidian://advanced-uri?filepath={}", url_encode(&arg_path)))
             .set_valid(true);
         
         items.push(item);
+    }
+
+    // Offer to create a new note from whatever was typed, with the tags written into the body
+    if allow_create && !is_empty_search {
+        let title_string = if title_terms.is_empty() {
+            "Untitled".to_string()
+        } else {
+            title_terms.join(" ")
+        };
+
+        let body_string = if tag_terms.is_empty() {
+            String::new()
+        } else {
+            let tags = tag_terms
+                .iter()
+                .map(|t| format!("#{}", t))
+                .collect::<Vec<String>>()
+                .join(" ");
+            format!("\n\n{}", tags)
+        };
+
+        let create_uri = format!(
+            "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}",
+            url_encode(&vault_name),
+            url_encode(&title_string),
+            url_encode(&body_string)
+        );
+
+        let create_item = Item::new(format!("Create \"{}\"", title_string))
+            .set_subtitle("Create a new note")
+            .set_arg(create_uri)
+            .set_valid(true);
+
+        if items.len() >= 2 {
+            items.insert(2, create_item);
+        } else {
+            items.push(create_item);
+        }
     }
 
     if items.is_empty() {
