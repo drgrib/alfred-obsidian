@@ -486,6 +486,17 @@ fn main() {
 
     let is_empty_search = title_terms.is_empty() && tag_terms.is_empty();
 
+    // Resolve the new note's title and check it against the full, un-filtered vault
+    let title_string = if title_terms.is_empty() {
+        "Untitled".to_string()
+    } else {
+        title_terms.join(" ")
+    };
+
+    let is_duplicate = results
+        .iter()
+        .any(|res| res.title.eq_ignore_ascii_case(&title_string));
+
     if !is_empty_search {
         results.retain(|res| {
             let lower_title = res.title.to_lowercase();
@@ -540,36 +551,45 @@ fn main() {
         items.push(item);
     }
 
-    // Offer to create a new note from whatever was typed, with the tags written into the body
+    // Offer to open the existing note, or create a new one with the tags written into the body
     if allow_create && !is_empty_search {
-        let title_string = if title_terms.is_empty() {
-            "Untitled".to_string()
+        let tag_string = tag_terms
+            .iter()
+            .map(|t| format!("#{}", t))
+            .collect::<Vec<String>>()
+            .join(" ");
+
+        let create_item = if is_duplicate {
+            // Open the existing note as-is; omit mode=new and data so tags are never appended
+            let open_uri = format!(
+                "obsidian://advanced-uri?vault={}&filepath={}",
+                url_encode(&vault_name),
+                url_encode(&title_string)
+            );
+
+            Item::new(format!("Open existing \"{}\"", title_string))
+                .set_subtitle("Note already exists")
+                .set_arg(open_uri)
+                .set_valid(true)
         } else {
-            title_terms.join(" ")
+            let body_string = if tag_string.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{}", tag_string)
+            };
+
+            let create_uri = format!(
+                "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}",
+                url_encode(&vault_name),
+                url_encode(&title_string),
+                url_encode(&body_string)
+            );
+
+            Item::new(format!("Create \"{}\"", title_string))
+                .set_subtitle(tag_string)
+                .set_arg(create_uri)
+                .set_valid(true)
         };
-
-        let body_string = if tag_terms.is_empty() {
-            String::new()
-        } else {
-            let tags = tag_terms
-                .iter()
-                .map(|t| format!("#{}", t))
-                .collect::<Vec<String>>()
-                .join(" ");
-            format!("\n\n{}", tags)
-        };
-
-        let create_uri = format!(
-            "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}",
-            url_encode(&vault_name),
-            url_encode(&title_string),
-            url_encode(&body_string)
-        );
-
-        let create_item = Item::new(format!("Create \"{}\"", title_string))
-            .set_subtitle("Create a new note")
-            .set_arg(create_uri)
-            .set_valid(true);
 
         if items.len() >= 2 {
             items.insert(2, create_item);
