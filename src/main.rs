@@ -456,7 +456,7 @@ fn main() {
             let time_ago = format_time_ago(*modified_time);
             items.push(
                 Item::new(format!("#{}", tag))
-                    .set_subtitle(format!("Last used: {}", time_ago))
+                    .set_subtitle(format!("{}", time_ago))
                     .set_autocomplete(format!("{}#{} ", prefix, tag))
                     .set_valid(false)
             );
