@@ -488,11 +488,20 @@ fn main() {
 
     let is_empty_search = title_terms.is_empty() && tag_terms.is_empty();
 
-    // Resolve the new note's title and check it against the full, un-filtered vault
-    let title_string = if title_terms.is_empty() {
+    // Resolve the new note's title and check it against the full, un-filtered vault.
+    // Built from `raw_query` rather than `title_terms`, because the latter are lowercased
+    // for search purposes and would destroy the user's original capitalization.
+    // Tag terms are skipped since they define tags, not the note title.
+    let title_string: String = raw_query
+        .split_whitespace()
+        .filter(|term| !term.starts_with('#'))
+        .collect::<Vec<&str>>()
+        .join(" ");
+
+    let title_string = if title_string.is_empty() {
         "Untitled".to_string()
     } else {
-        title_terms.join(" ")
+        title_string
     };
 
     let is_duplicate = results
