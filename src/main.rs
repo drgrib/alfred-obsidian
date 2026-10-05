@@ -509,6 +509,13 @@ fn main() {
         .collect::<Vec<&str>>()
         .join(" ");
 
+    // Trim whitespace around any slashes so "folder / note" becomes "folder/note"
+    let title_string = title_string
+        .split('/')
+        .map(|s| s.trim())
+        .collect::<Vec<&str>>()
+        .join("/");
+
     let title_string = if title_string.is_empty() {
         "Untitled".to_string()
     } else {
@@ -618,6 +625,35 @@ fn main() {
                 .set_arg(open_uri)
                 .set_valid(true)
         } else {
+            // A slash in the typed title means the note lands in a subdirectory of the vault.
+            // The title shows only the note name; the directory is shown in the subtitle.
+            let new_note_path = Path::new(&title_string);
+            let file_name_str = new_note_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&title_string)
+                .to_string();
+            let parent_str = match new_note_path.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().into_owned(),
+                _ => String::new(),
+            };
+
+            let create_location = if !parent_str.is_empty() {
+                format!("{}/{}", vault_name, parent_str)
+            } else if has_multiple_vaults {
+                vault_name.clone()
+            } else {
+                String::new()
+            };
+
+            let create_subtitle = if tag_string.is_empty() {
+                create_location
+            } else if create_location.is_empty() {
+                tag_string.clone()
+            } else {
+                format!("{} | {}", create_location, tag_string)
+            };
+
             let body_string = if tag_string.is_empty() {
                 String::new()
             } else {
@@ -632,8 +668,8 @@ fn main() {
                 title_string
             );
 
-            Item::new(format!("Create \"{}\"", title_string))
-                .set_subtitle(tag_string)
+            Item::new(format!("Create \"{}\"", file_name_str))
+                .set_subtitle(create_subtitle)
                 .set_arg(create_uri)
                 .set_valid(true)
         };
