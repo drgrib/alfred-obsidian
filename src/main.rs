@@ -245,6 +245,23 @@ fn format_time_ago(time: SystemTime) -> String {
     }
 }
 
+/// Reads and deserializes the cache file, removing it if it is unreadable or corrupt.
+fn load_cache(cache_path: &Path) -> Option<VaultCache> {
+    match fs::read_to_string(cache_path) {
+        Ok(file_content) => match serde_json::from_str::<VaultCache>(&file_content) {
+            Ok(parsed_data) => Some(parsed_data),
+            Err(_) => {
+                fs::remove_file(cache_path).ok();
+                None
+            }
+        },
+        Err(_) => {
+            fs::remove_file(cache_path).ok();
+            None
+        }
+    }
+}
+
 fn run_worker(target_key: &str) {
     let vault_map = get_vault_map();
     let target_path = match vault_map.get(target_key) {
@@ -359,28 +376,22 @@ fn main() {
     // Load the cache first so results can be served immediately on every keystroke
     let mut cached_data_opt = None;
     if cache_path.exists() {
-        if let Ok(file_content) = fs::read_to_string(&cache_path) {
-            if let Ok(parsed_data) = serde_json::from_str::<VaultCache>(&file_content) {
-                cached_data_opt = Some(parsed_data);
-            } else {
-                fs::remove_file(&cache_path).ok();
-            }
-        } else {
-            fs::remove_file(&cache_path).ok();
-        }
+        cached_data_opt = load_cache(&cache_path);
     }
 
     // With a usable cache, only refresh on the first launch (empty query) so that
-    // typing never triggers a reindex
+    // typing never triggers a reindex. The refresh runs synchronously on this thread:
+    // it is an incremental update against an existing cache, and blocking until it
+    // finishes means Alfred renders the final list once instead of re-rendering
+    // underneath the user's cursor (which caused the cursor to snap).
     if cached_data_opt.is_some() && query.is_empty() {
-        Command::new(env::current_exe().unwrap())
-            .arg("worker")
-            .arg(target_key)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok();
+        run_worker(target_key);
+
+        // The worker has just rewritten the cache file, so re-read it to serve the
+        // freshly indexed data rather than the copy loaded above.
+        if let Some(refreshed) = load_cache(&cache_path) {
+            cached_data_opt = Some(refreshed);
+        }
     }
 
     // Only show the progress screen when there is no cache to serve; otherwise the
@@ -575,9 +586,10 @@ fn main() {
         let create_item = if is_duplicate {
             // Open the existing note as-is; omit mode=new and data so tags are never appended
             let open_uri = format!(
-                "obsidian://advanced-uri?vault={}&filepath={}",
+                "obsidian://advanced-uri?vault={}&filepath={}|{}",
                 url_encode(&vault_name),
-                url_encode(&title_string)
+                url_encode(&title_string),
+                title_string
             );
 
             Item::new(format!("Open existing \"{}\"", title_string))
