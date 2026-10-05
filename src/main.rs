@@ -538,6 +538,9 @@ fn main() {
         .unwrap_or(&clean_key)
         .to_string();
 
+    // The vault name only adds useful context when more than one vault is configured
+    let has_multiple_vaults = vault_map.len() > 1;
+
     if !is_create_only {
         for res in results.iter().take(50) {
             // Show the note's location relative to the vault, without the filename
@@ -545,15 +548,33 @@ fn main() {
             let location = match note_path.strip_prefix(vault_dir) {
                 Ok(relative) => match relative.parent() {
                     Some(parent) if !parent.as_os_str().is_empty() => {
-                        format!("{}/{}", vault_name, parent.to_string_lossy())
+                        if has_multiple_vaults {
+                            format!("{}/{}", vault_name, parent.to_string_lossy())
+                        } else {
+                            parent.to_string_lossy().into_owned()
+                        }
                     }
-                    _ => vault_name.clone(),
+                    _ => {
+                        if has_multiple_vaults {
+                            vault_name.clone()
+                        } else {
+                            String::new()
+                        }
+                    }
                 },
-                Err(_) => vault_name.clone(),
+                Err(_) => {
+                    if has_multiple_vaults {
+                        vault_name.clone()
+                    } else {
+                        String::new()
+                    }
+                }
             };
 
             let subtitle = if res.tags.is_empty() {
                 location
+            } else if location.is_empty() {
+                format!("#{}", res.tags.join(" #"))
             } else {
                 format!("{} | #{}", location, res.tags.join(" #"))
             };
