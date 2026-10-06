@@ -1,4 +1,10 @@
 use alfred_workflow_rs::Item;
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
+use grep_searcher::sinks::UTF8;
+use grep_searcher::Searcher;
+use ignore::{
+    DirEntry, Error as IgnoreError, ParallelVisitor, ParallelVisitorBuilder, WalkBuilder, WalkState,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -6,6 +12,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 fn url_encode(input: &str) -> String {
@@ -30,12 +37,25 @@ struct AlfredOutput {
     items: Vec<Item>,
 }
 
+/// Maximum number of content (full-text) matches to keep from a single search.
+const MAX_CONTENT_MATCHES: usize = 50;
+
 #[derive(Serialize, Deserialize, Clone)]
 struct FileResult {
     title: String,
     path: String,
     modified: SystemTime,
     tags: Vec<String>,
+    /// Set only for notes found via content search; never persisted to the cache.
+    #[serde(skip)]
+    snippet: Option<String>,
+}
+
+/// A note whose body matched the query, plus the matching line to show the user.
+#[derive(Clone)]
+struct ContentMatch {
+    path: String,
+    snippet: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +69,123 @@ struct State {
     progress: u32,
     total: u32,
     status: String,
+}
+
+/// Escapes regex metacharacters so a query can be matched as a literal string.
+fn escape_regex(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if "\\^$.|?*+()[]{}".contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Trims a matched line down to something readable in an Alfred subtitle.
+fn build_snippet(line: &str) -> String {
+    const MAX_SNIPPET_CHARS: usize = 120;
+    let trimmed = line.trim();
+    let mut snippet: String = trimmed.chars().take(MAX_SNIPPET_CHARS).collect();
+    if trimmed.chars().count() > MAX_SNIPPET_CHARS {
+        snippet.push('…');
+    }
+    snippet
+}
+
+/// Builds a case-insensitive matcher for a content query.
+///
+/// The query is compiled as a regex first so patterns like `foo.*bar` work, but
+/// most queries are plain words that may contain characters which are invalid
+/// regex (e.g. `c++`), so those fall back to a literal, escaped search.
+fn build_content_matcher(query: &str) -> Option<RegexMatcher> {
+    let mut builder = RegexMatcherBuilder::new();
+    builder.case_insensitive(true);
+    match builder.build(query) {
+        Ok(matcher) => Some(matcher),
+        Err(_) => builder.build(&escape_regex(query)).ok(),
+    }
+}
+
+/// Builds the per-thread visitors used by `WalkBuilder::build_parallel`.
+struct ContentVisitorBuilder {
+    matcher: RegexMatcher,
+    matches: Arc<Mutex<Vec<ContentMatch>>>,
+}
+
+impl<'s> ParallelVisitorBuilder<'s> for ContentVisitorBuilder {
+    fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
+        // `RegexMatcher` is cheap to clone and shares nothing mutable, so each
+        // walking thread gets its own copy to avoid contention.
+        Box::new(ContentVisitor {
+            matcher: self.matcher.clone(),
+            matches: Arc::clone(&self.matches),
+            searcher: Searcher::new(),
+        })
+    }
+}
+
+/// Searches one file at a time, keeping only the first matching line of each hit.
+struct ContentVisitor {
+    matcher: RegexMatcher,
+    matches: Arc<Mutex<Vec<ContentMatch>>>,
+    searcher: Searcher,
+}
+
+impl ParallelVisitor for ContentVisitor {
+    fn visit(&mut self, entry: Result<DirEntry, IgnoreError>) -> WalkState {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return WalkState::Continue,
+        };
+
+        // Only regular files can be searched
+        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+            return WalkState::Continue;
+        }
+
+        // The cache only indexes markdown, so content search stays consistent with it
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            return WalkState::Continue;
+        }
+
+        // Once a full page of hits is collected there is no point reading more files
+        if let Ok(guard) = self.matches.lock() {
+            if guard.len() >= MAX_CONTENT_MATCHES {
+                return WalkState::Continue;
+            }
+        }
+
+        let mut snippet: Option<String> = None;
+        let matcher = &self.matcher;
+        let sink = UTF8(|_line_number: u64, line: &str| -> std::io::Result<bool> {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                snippet = Some(build_snippet(trimmed));
+            }
+            // Returning false stops the search after the first matching line
+            Ok(false)
+        });
+
+        if self.searcher.search_path(matcher, path, sink).is_err() {
+            return WalkState::Continue;
+        }
+
+        if let Some(snippet) = snippet {
+            if let Ok(mut guard) = self.matches.lock() {
+                if guard.len() < MAX_CONTENT_MATCHES {
+                    guard.push(ContentMatch {
+                        path: path.to_string_lossy().into_owned(),
+                        snippet,
+                    });
+                }
+            }
+        }
+
+        WalkState::Continue
+    }
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -209,6 +346,7 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, old_cache: &HashMap<
                             path: path.to_string_lossy().into_owned(),
                             modified,
                             tags: extract_tags(&path),
+                            snippet: None,
                         },
                     };
 
@@ -446,6 +584,14 @@ fn main() {
     let tag_recency = cached_data.tag_recency;
     let mut items = Vec::new();
 
+    // Snapshot of every cached file keyed by path, taken before `results` is narrowed
+    // by the title/tag filter so content-search hits can still be resolved back to
+    // their cached title, modified time and tags.
+    let file_lookup: HashMap<String, FileResult> = results
+        .iter()
+        .map(|res| (res.path.clone(), res.clone()))
+        .collect();
+
     let ends_with_space = raw_query.ends_with(' ');
     let last_term = all_terms.last().copied().unwrap_or("");
     let is_autocompleting_tag = !ends_with_space && last_term.starts_with('#');
@@ -536,6 +682,60 @@ fn main() {
         });
     }
 
+    // Full-text fallback: when title/tag matches are sparse, grep the note bodies so
+    // notes that merely mention the query still surface. Skipped for very short
+    // queries, which would match far too much to be useful.
+    let content_query = title_terms.join(" ");
+    if results.len() < 50 && content_query.len() >= 3 {
+        if let Some(matcher) = build_content_matcher(&content_query) {
+            let content_matches: Arc<Mutex<Vec<ContentMatch>>> = Arc::new(Mutex::new(Vec::new()));
+            let mut visitor_builder = ContentVisitorBuilder {
+                matcher,
+                matches: Arc::clone(&content_matches),
+            };
+
+            WalkBuilder::new(vault_dir)
+                .build_parallel()
+                .visit(&mut visitor_builder);
+
+            let found: Vec<ContentMatch> = match content_matches.lock() {
+                Ok(mut guard) => std::mem::take(&mut *guard),
+                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+            };
+
+            for content_match in found {
+                // Never list a note twice: title/tag hits keep their original entry
+                if results.iter().any(|res| res.path == content_match.path) {
+                    continue;
+                }
+
+                let mut file_result = match file_lookup.get(&content_match.path) {
+                    Some(cached) => cached.clone(),
+                    // A file too new to be in the cache still deserves a row
+                    None => {
+                        let path = Path::new(&content_match.path);
+                        FileResult {
+                            title: path
+                                .file_stem()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&content_match.path)
+                                .to_string(),
+                            path: content_match.path.clone(),
+                            modified: fs::metadata(path)
+                                .and_then(|m| m.modified())
+                                .unwrap_or(SystemTime::UNIX_EPOCH),
+                            tags: Vec::new(),
+                            snippet: None,
+                        }
+                    }
+                };
+
+                file_result.snippet = Some(content_match.snippet);
+                results.push(file_result);
+            }
+        }
+    }
+
     results.truncate(50);
 
     // The vault folder name is used as the root label in result subtitles
@@ -578,7 +778,15 @@ fn main() {
                 }
             };
 
-            let subtitle = if res.tags.is_empty() {
+            let subtitle = if let Some(snippet) = &res.snippet {
+                // Content matches lead with the line that matched, so it is obvious
+                // why this note showed up for a query that is not in its title
+                if location.is_empty() {
+                    snippet.clone()
+                } else {
+                    format!("{} | {}", location, snippet)
+                }
+            } else if res.tags.is_empty() {
                 location
             } else if location.is_empty() {
                 format!("#{}", res.tags.join(" #"))
