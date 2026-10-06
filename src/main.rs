@@ -94,23 +94,27 @@ fn build_snippet(line: &str) -> String {
     snippet
 }
 
-/// Builds a case-insensitive matcher for a content query.
+/// Builds one case-insensitive matcher per search term.
 ///
-/// The query is compiled as a regex first so patterns like `foo.*bar` work, but
-/// most queries are plain words that may contain characters which are invalid
-/// regex (e.g. `c++`), so those fall back to a literal, escaped search.
-fn build_content_matcher(query: &str) -> Option<RegexMatcher> {
-    let mut builder = RegexMatcherBuilder::new();
-    builder.case_insensitive(true);
-    match builder.build(query) {
-        Ok(matcher) => Some(matcher),
-        Err(_) => builder.build(&escape_regex(query)).ok(),
-    }
+/// Each term is compiled as a regex first so patterns like `foo.*bar` work, but
+/// most terms are plain words that may contain characters which are invalid regex
+/// (e.g. `c++`), so those fall back to a literal, escaped search. A file only
+/// counts as a content match when every term matches somewhere inside it.
+fn build_term_matchers(terms: &[&str]) -> Vec<RegexMatcher> {
+    terms
+        .iter()
+        .filter(|t| !t.trim().is_empty())
+        .filter_map(|t| {
+            let mut builder = RegexMatcherBuilder::new();
+            builder.case_insensitive(true);
+            builder.build(t).or_else(|_| builder.build(&escape_regex(t))).ok()
+        })
+        .collect()
 }
 
 /// Builds the per-thread visitors used by `WalkBuilder::build_parallel`.
 struct ContentVisitorBuilder {
-    matcher: RegexMatcher,
+    matchers: Vec<RegexMatcher>,
     matches: Arc<Mutex<Vec<ContentMatch>>>,
 }
 
@@ -119,16 +123,16 @@ impl<'s> ParallelVisitorBuilder<'s> for ContentVisitorBuilder {
         // `RegexMatcher` is cheap to clone and shares nothing mutable, so each
         // walking thread gets its own copy to avoid contention.
         Box::new(ContentVisitor {
-            matcher: self.matcher.clone(),
+            matchers: self.matchers.clone(),
             matches: Arc::clone(&self.matches),
             searcher: Searcher::new(),
         })
     }
 }
 
-/// Searches one file at a time, keeping only the first matching line of each hit.
+/// Searches one file at a time, keeping the first matching line as the snippet.
 struct ContentVisitor {
-    matcher: RegexMatcher,
+    matchers: Vec<RegexMatcher>,
     matches: Arc<Mutex<Vec<ContentMatch>>>,
     searcher: Searcher,
 }
@@ -158,28 +162,50 @@ impl ParallelVisitor for ContentVisitor {
             }
         }
 
+        // The file counts as a hit only when every term matches somewhere inside
+        // it, so "foo bar" still matches a note whose words never share a line
         let mut snippet: Option<String> = None;
-        let matcher = &self.matcher;
-        let sink = UTF8(|_line_number: u64, line: &str| -> std::io::Result<bool> {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                snippet = Some(build_snippet(trimmed));
-            }
-            // Returning false stops the search after the first matching line
-            Ok(false)
-        });
+        let mut matched_every_term = true;
 
-        if self.searcher.search_path(matcher, path, sink).is_err() {
-            return WalkState::Continue;
+        for matcher in &self.matchers {
+            let mut matched_line: Option<String> = None;
+            let sink = UTF8(|_line_number: u64, line: &str| -> std::io::Result<bool> {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    matched_line = Some(build_snippet(trimmed));
+                }
+                // Returning false stops the search after the first matching line
+                Ok(false)
+            });
+
+            if self.searcher.search_path(matcher, path, sink).is_err() {
+                matched_every_term = false;
+                break;
+            }
+
+            match matched_line {
+                // The first term's matching line is the one shown in Alfred
+                Some(line) => {
+                    if snippet.is_none() {
+                        snippet = Some(line);
+                    }
+                }
+                None => {
+                    matched_every_term = false;
+                    break;
+                }
+            }
         }
 
-        if let Some(snippet) = snippet {
-            if let Ok(mut guard) = self.matches.lock() {
-                if guard.len() < MAX_CONTENT_MATCHES {
-                    guard.push(ContentMatch {
-                        path: path.to_string_lossy().into_owned(),
-                        snippet,
-                    });
+        if matched_every_term {
+            if let Some(snippet) = snippet {
+                if let Ok(mut guard) = self.matches.lock() {
+                    if guard.len() < MAX_CONTENT_MATCHES {
+                        guard.push(ContentMatch {
+                            path: path.to_string_lossy().into_owned(),
+                            snippet,
+                        });
+                    }
                 }
             }
         }
@@ -683,14 +709,17 @@ fn main() {
     }
 
     // Full-text fallback: when title/tag matches are sparse, grep the note bodies so
-    // notes that merely mention the query still surface. Skipped for very short
-    // queries, which would match far too much to be useful.
-    let content_query = title_terms.join(" ");
-    if results.len() < 50 && content_query.len() >= 3 {
-        if let Some(matcher) = build_content_matcher(&content_query) {
+    // notes that merely mention the query still surface. Every term has to appear
+    // somewhere in the file; terms under two characters are too noisy to search for.
+    if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
+        let matchers = build_term_matchers(&title_terms);
+
+        // Every term must have compiled, otherwise the search would silently
+        // ignore part of what the user typed
+        if matchers.len() == title_terms.len() {
             let content_matches: Arc<Mutex<Vec<ContentMatch>>> = Arc::new(Mutex::new(Vec::new()));
             let mut visitor_builder = ContentVisitorBuilder {
-                matcher,
+                matchers,
                 matches: Arc::clone(&content_matches),
             };
 
@@ -736,6 +765,44 @@ fn main() {
         }
     }
 
+    // Rank matches so exact title hits beat loose term hits, which in turn beat
+    // content hits. Ties fall back to the most recently modified note.
+    let exact_query = title_terms.join(" ").to_lowercase();
+
+    let rank_result = |res: &FileResult| -> u8 {
+        let lower_title = res.title.to_lowercase();
+        let title_has_exact =
+            !exact_query.is_empty() && (lower_title == exact_query || lower_title.contains(&exact_query));
+        let title_has_all_terms = !title_terms.is_empty()
+            && title_terms
+                .iter()
+                .all(|term| lower_title.contains(*term));
+
+        match (res.snippet.is_some(), title_has_exact, title_has_all_terms) {
+            // Tier 1: the title contains the whole query
+            (false, true, _) => 0,
+            // Tier 2: the title contains every term separately
+            (false, _, true) => 1,
+            // Tier 3 / 4: a content hit, ranked by whether the matched line holds
+            // the whole query or just one of the terms
+            (true, _, _) => {
+                let snippet = res.snippet.as_ref().unwrap().to_lowercase();
+                if !exact_query.is_empty() && snippet.contains(&exact_query) {
+                    2
+                } else {
+                    3
+                }
+            }
+            _ => 4,
+        }
+    };
+
+    results.sort_by(|a, b| {
+        rank_result(a)
+            .cmp(&rank_result(b))
+            .then_with(|| b.modified.cmp(&a.modified))
+    });
+
     results.truncate(50);
 
     // The vault folder name is used as the root label in result subtitles
@@ -778,9 +845,14 @@ fn main() {
                 }
             };
 
-            let subtitle = if let Some(snippet) = &res.snippet {
-                // Content matches lead with the line that matched, so it is obvious
-                // why this note showed up for a query that is not in its title
+            // When the title itself explains the match, the note's tags are more
+            // useful than the matched line; otherwise the snippet explains the hit
+            let lower_title = res.title.to_lowercase();
+            let title_matches_all_terms =
+                !title_terms.is_empty() && title_terms.iter().all(|term| lower_title.contains(term));
+
+            let subtitle = if !title_matches_all_terms && res.snippet.is_some() {
+                let snippet = res.snippet.as_ref().unwrap();
                 if location.is_empty() {
                     snippet.clone()
                 } else {
