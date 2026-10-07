@@ -46,6 +46,11 @@ const MAX_CONTENT_MATCHES: usize = 50;
 /// instead of being applied inline while the user waits.
 const DIRTY_FILE_THRESHOLD: usize = 10;
 
+/// Number of changed images above which indexing is handed to the background worker.
+/// Kept separate from the overall threshold because every image costs a Vision OCR
+/// call, which is far slower than parsing a note.
+const DIRTY_IMAGE_THRESHOLD: usize = 1;
+
 /// A worker's state file older than this (in seconds) is treated as abandoned, since
 /// a healthy worker rewrites it constantly while it indexes.
 const STALE_STATE_SECS: u64 = 300;
@@ -378,12 +383,16 @@ fn collect_vault_files(
                 }
             }
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            let modified = fs::metadata(&path)
+            // entry.metadata() stats through the directory entry descriptor, which on
+            // macOS avoids re-resolving the full path for every file in the vault
+            let modified = entry
+                .metadata()
                 .and_then(|meta| meta.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             notes.insert(path.to_string_lossy().into_owned(), modified);
         } else if is_supported_image(&path) {
-            let modified = fs::metadata(&path)
+            let modified = entry
+                .metadata()
                 .and_then(|meta| meta.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             images.insert(path.to_string_lossy().into_owned(), modified);
@@ -570,6 +579,22 @@ fn load_cache(cache_path: &Path) -> Option<VaultCache> {
     }
 }
 
+/// Serializes `value` to JSON and writes it to `path` without ever exposing a partial
+/// file: the bytes land in a sibling `.json.tmp` file and are then renamed over the
+/// target, so Alfred's 0.2s rerun polls read either the old file or the complete new one.
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) {
+    let json = match serde_json::to_string(value) {
+        Ok(json) => json,
+        Err(_) => return,
+    };
+
+    let tmp_path = path.with_extension("json.tmp");
+    if fs::write(&tmp_path, json).is_ok() {
+        // A failed rename leaves the previous file in place, which is the safe outcome
+        fs::rename(&tmp_path, path).ok();
+    }
+}
+
 fn run_worker(target_key: &str) {
     let vault_map = get_vault_map();
     let target_path = match vault_map.get(target_key) {
@@ -585,8 +610,18 @@ fn run_worker(target_key: &str) {
 
     let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
 
-    let mut state = State { progress: 0, total: 0, status: "Scanning vault...".to_string() };
-    fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
+    // main() already counted the dirty files before spawning this worker, so reuse that
+    // total rather than flashing "0 of 0 files processed" until the scan finishes
+    let existing_total: u32 = fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<State>(&content).ok())
+        .map(|state| state.total)
+        .unwrap_or(0);
+
+    let mut state = State { progress: 0, total: existing_total, status: "Scanning vault...".to_string() };
+    if existing_total == 0 {
+        write_json_atomic(&state_path, &state);
+    }
 
     // Load both caches first: only the files that differ from them need real work
     let existing_cache: Option<VaultCache> = fs::read_to_string(&cache_path)
@@ -611,7 +646,7 @@ fn run_worker(target_key: &str) {
     state.total = (scan.dirty_notes.len() + scan.dirty_images.len()) as u32;
     state.progress = 0;
     state.status = "Indexing vault...".to_string();
-    fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
+    write_json_atomic(&state_path, &state);
 
     // Unchanged notes are carried over untouched, so nothing re-reads them
     let mut results: Vec<FileResult> = Vec::with_capacity(scan.notes.len());
@@ -630,7 +665,7 @@ fn run_worker(target_key: &str) {
         state.progress += 1;
         // Small batches are reported file by file; larger ones every 25 files
         if state.total < 100 || state.progress % 25 == 0 {
-            fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
+            write_json_atomic(&state_path, &state);
         }
     }
 
@@ -641,7 +676,7 @@ fn run_worker(target_key: &str) {
 
         // OCR is slow enough that every image is worth reporting
         state.progress += 1;
-        fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
+        write_json_atomic(&state_path, &state);
     }
 
     // Entries whose files vanished from disk are dropped rather than kept forever
@@ -649,16 +684,12 @@ fn run_worker(target_key: &str) {
 
     results.sort_by(|a, b| b.modified.cmp(&a.modified));
 
-    if let Ok(json) = serde_json::to_string(&ocr_cache) {
-        fs::write(&ocr_cache_path, json).ok();
-    }
+    write_json_atomic(&ocr_cache_path, &ocr_cache);
 
     // Rebuild tag recency from the new results so tags that no longer exist are cleared
     let tag_recency = build_tag_recency(&results);
 
-    if let Ok(json) = serde_json::to_string(&VaultCache { files: results, tag_recency }) {
-        fs::write(&cache_path, json).ok();
-    }
+    write_json_atomic(&cache_path, &VaultCache { files: results, tag_recency });
     fs::remove_file(&state_path).ok();
 }
 
@@ -763,7 +794,7 @@ fn main() {
 
     // Cold start: no cache exists at all
     if cached_data_opt.is_none() {
-        fs::write(&state_path, r#"{"progress":0,"total":0,"status":"Starting Indexer..."}"#).ok();
+        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string() });
 
         if let Ok(exe) = env::current_exe() {
             Command::new(exe)
@@ -791,8 +822,8 @@ fn main() {
     // Empty query: reconcile the caches with the vault so the list is never stale.
     // A typed query never pays for the directory walk, it just searches what is cached.
     if query.is_empty() {
-        if let Some(cached_data) = cached_data_opt.take() {
-            let ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
+        if let Some(mut cached_data) = cached_data_opt.take() {
+            let mut ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
                 .ok()
                 .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
                 .unwrap_or_default();
@@ -806,10 +837,11 @@ fn main() {
             let scan = scan_vault(vault_dir, &note_index, &ocr_cache);
             let dirty_count = scan.dirty_notes.len() + scan.dirty_images.len();
 
-            if dirty_count > DIRTY_FILE_THRESHOLD {
-                // Too much work to finish while the user waits: hand it to the worker
+            if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
+                // Too much work to finish while the user waits: hand it to the worker. Images
+                // get their own limit because each one costs a Vision OCR call.
                 let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string() };
-                fs::write(&state_path, serde_json::to_string(&state).unwrap()).ok();
+                write_json_atomic(&state_path, &state);
 
                 if let Ok(exe) = env::current_exe() {
                     Command::new(exe)
@@ -835,40 +867,48 @@ fn main() {
             }
 
             if dirty_count > 0 || scan.has_deleted {
-                // Small enough to fix inline: re-read only what changed, keep everything else
-                let mut files: Vec<FileResult> = Vec::with_capacity(scan.notes.len());
-                for (path, modified) in &scan.notes {
-                    match note_index.get(path) {
-                        Some(cached) if cached.modified == *modified => files.push(cached.clone()),
-                        _ => files.push(parse_note(path, *modified)),
+                // Small enough to fix inline: mutate the loaded caches in place so unchanged
+                // entries are never cloned or rebuilt from scratch
+                cached_data.files.retain(|res| scan.notes.contains_key(&res.path));
+                ocr_cache.retain(|path, _| scan.images.contains_key(path));
+
+                // Map surviving paths to their slot so a dirty note overwrites its own
+                // entry instead of being appended a second time
+                let mut slot_by_path: HashMap<String, usize> = HashMap::with_capacity(cached_data.files.len());
+                for (index, res) in cached_data.files.iter().enumerate() {
+                    slot_by_path.insert(res.path.clone(), index);
+                }
+
+                for path in &scan.dirty_notes {
+                    let modified = scan.notes.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let parsed = parse_note(path, modified);
+
+                    match slot_by_path.get(path).copied() {
+                        Some(index) => cached_data.files[index] = parsed,
+                        None => {
+                            slot_by_path.insert(path.clone(), cached_data.files.len());
+                            cached_data.files.push(parsed);
+                        }
                     }
                 }
-                files.sort_by(|a, b| b.modified.cmp(&a.modified));
 
-                let mut updated_ocr: OcrCache = HashMap::with_capacity(scan.images.len());
-                for (path, modified) in &scan.images {
-                    match ocr_cache.get(path) {
-                        Some(cached) if cached.modified == *modified => {
-                            updated_ocr.insert(path.clone(), cached.clone());
-                        }
-                        _ => {
-                            let text = recognize_text(path);
-                            updated_ocr.insert(path.clone(), OcrResult { modified: *modified, text });
-                        }
-                    }
+                cached_data.files.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+                for path in &scan.dirty_images {
+                    let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let text = recognize_text(path);
+                    ocr_cache.insert(path.clone(), OcrResult { modified, text });
                 }
 
-                let tag_recency = build_tag_recency(&files);
-                let updated_cache = VaultCache { files, tag_recency };
+                cached_data.tag_recency = build_tag_recency(&cached_data.files);
 
-                if let Ok(json) = serde_json::to_string(&updated_cache) {
-                    fs::write(&cache_path, json).ok();
-                }
-                if let Ok(json) = serde_json::to_string(&updated_ocr) {
-                    fs::write(&ocr_cache_path, json).ok();
+                write_json_atomic(&cache_path, &cached_data);
+                // The OCR cache is only rewritten when images changed or entries were dropped
+                if !scan.dirty_images.is_empty() || scan.has_deleted {
+                    write_json_atomic(&ocr_cache_path, &ocr_cache);
                 }
 
-                cached_data_opt = Some(updated_cache);
+                cached_data_opt = Some(cached_data);
             } else {
                 cached_data_opt = Some(cached_data);
             }
