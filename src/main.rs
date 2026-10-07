@@ -1,3 +1,5 @@
+// Tue, 06 Oct 2026 17:24:24 PDT
+
 use alfred_workflow_rs::Item;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::sinks::UTF8;
@@ -8,8 +10,10 @@ use ignore::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -46,10 +50,22 @@ struct FileResult {
     path: String,
     modified: SystemTime,
     tags: Vec<String>,
+    /// Basenames of every file this note embeds (`![[image.png]]` or `![](image.png)`),
+    /// used to route OCR hits back to the note that shows the image.
+    links: Vec<String>,
     /// Set only for notes found via content search; never persisted to the cache.
     #[serde(skip)]
     snippet: Option<String>,
 }
+
+/// Text recognized from an image, kept so the same image is never OCR'd twice
+/// while its modification time stays the same.
+#[derive(Serialize, Deserialize, Clone)]
+struct OcrResult {
+    modified: SystemTime,
+    text: String,
+}
+type OcrCache = HashMap<String, OcrResult>;
 
 /// A note whose body matched the query, plus the matching line to show the user.
 #[derive(Clone)]
@@ -69,6 +85,29 @@ struct State {
     progress: u32,
     total: u32,
     status: String,
+}
+
+extern "C" {
+    fn perform_ocr(path: *const c_char) -> *mut c_char;
+    fn free_ocr_string(ptr: *mut c_char);
+}
+
+/// Recognizes the text in an image through the native Vision framework.
+///
+/// Returns an empty string when the image cannot be read, so a failed recognition
+/// is cached as "no text" rather than retried on every pass.
+fn recognize_text(path: &str) -> String {
+    if let Ok(c_path) = CString::new(path) {
+        unsafe {
+            let ptr = perform_ocr(c_path.as_ptr());
+            if !ptr.is_null() {
+                let text = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                free_ocr_string(ptr);
+                return text;
+            }
+        }
+    }
+    String::new()
 }
 
 /// Escapes regex metacharacters so a query can be matched as a literal string.
@@ -257,12 +296,20 @@ fn count_files(dir: &Path) -> u32 {
                         count += count_files(&path);
                     }
                 }
-            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            } else if is_supported_image(&path) || path.extension().and_then(|e| e.to_str()) == Some("md") {
                 count += 1;
             }
         }
     }
     count
+}
+
+/// True when the file is an image format the OCR CLI can read.
+fn is_supported_image(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"),
+        None => false,
+    }
 }
 
 fn clean_tag(raw_tag: &str) -> Option<String> {
@@ -283,8 +330,10 @@ fn parse_inline_list(val: &str, tags: &mut HashSet<String>) {
     }
 }
 
-fn extract_tags(path: &Path) -> Vec<String> {
+/// Parses a note's tags and the basenames of the files it embeds in one pass.
+fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
     let mut tags = HashSet::new();
+    let mut links = HashSet::new();
     
     if let Ok(file) = fs::File::open(path) {
         let reader = BufReader::new(file);
@@ -340,20 +389,47 @@ fn extract_tags(path: &Path) -> Vec<String> {
                     }
                 }
             }
+
+            // Runs for every line regardless of tag handling: an embed can sit
+            // anywhere in the note, including inside frontmatter.
+            let mut ptr = line.as_str();
+            while let Some(start) = ptr.find("[[") {
+                ptr = &ptr[start + 2..];
+                if let Some(end) = ptr.find("]]") {
+                    let content = &ptr[..end];
+                    let target = content.split('|').next().unwrap_or(content).trim();
+                    if let Some(name) = Path::new(target).file_name().and_then(|n| n.to_str()) {
+                        links.insert(name.to_string());
+                    }
+                    ptr = &ptr[end + 2..];
+                }
+            }
+
+            let mut ptr = line.as_str();
+            while let Some(start) = ptr.find("](") {
+                ptr = &ptr[start + 2..];
+                if let Some(end) = ptr.find(')') {
+                    let target = &ptr[..end];
+                    if let Some(name) = Path::new(target).file_name().and_then(|n| n.to_str()) {
+                        links.insert(name.replace("%20", " "));
+                    }
+                    ptr = &ptr[end + 1..];
+                }
+            }
         }
     }
-    
-    tags.into_iter().collect()
+
+    (tags.into_iter().collect(), links.into_iter().collect())
 }
 
-fn process_files(dir: &Path, results: &mut Vec<FileResult>, old_cache: &HashMap<String, FileResult>, state: &mut State, state_path: &Path) {
+fn process_files(dir: &Path, results: &mut Vec<FileResult>, old_cache: &HashMap<String, FileResult>, state: &mut State, state_path: &Path, ocr_cache: &mut OcrCache) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if !name.starts_with('.') {
-                        process_files(&path, results, old_cache, state, state_path);
+                        process_files(&path, results, old_cache, state, state_path, ocr_cache);
                     }
                 }
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -367,13 +443,17 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, old_cache: &HashMap<
                     // Reuse the cached entry when the file is unchanged, otherwise re-parse it
                     let result = match old_cache.get(&path_key) {
                         Some(cached) if cached.modified == modified => cached.clone(),
-                        _ => FileResult {
-                            title: stem.to_string(),
-                            path: path.to_string_lossy().into_owned(),
-                            modified,
-                            tags: extract_tags(&path),
-                            snippet: None,
-                        },
+                        _ => {
+                            let (tags, links) = extract_tags_and_links(&path);
+                            FileResult {
+                                title: stem.to_string(),
+                                path: path.to_string_lossy().into_owned(),
+                                modified,
+                                tags,
+                                links,
+                                snippet: None,
+                            }
+                        }
                     };
 
                     results.push(result);
@@ -383,6 +463,34 @@ fn process_files(dir: &Path, results: &mut Vec<FileResult>, old_cache: &HashMap<
                         if let Ok(json) = serde_json::to_string(state) {
                             fs::write(state_path, json).ok();
                         }
+                    }
+                }
+            } else if is_supported_image(&path) {
+                let modified = fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                let path_key = path.to_string_lossy().into_owned();
+
+                let needs_ocr = match ocr_cache.get(&path_key) {
+                    Some(cached) => cached.modified != modified,
+                    None => true,
+                };
+
+                if needs_ocr {
+                    state.status = "Indexing vault...".to_string();
+                    if let Ok(json) = serde_json::to_string(&state) {
+                        fs::write(&state_path, json).ok();
+                    }
+
+                    let text = recognize_text(&path.to_string_lossy());
+                    ocr_cache.insert(path_key, OcrResult { modified, text });
+                }
+
+                state.progress += 1;
+                if state.progress % 50 == 0 || needs_ocr {
+                    if let Ok(json) = serde_json::to_string(&state) {
+                        fs::write(&state_path, json).ok();
                     }
                 }
             }
@@ -458,10 +566,20 @@ fn run_worker(target_key: &str) {
         }
     }
 
+    let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
+    let mut ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
+        .unwrap_or_default();
+
     let mut results = Vec::new();
-    process_files(vault_dir, &mut results, &old_cache, &mut state, &state_path);
+    process_files(vault_dir, &mut results, &old_cache, &mut state, &state_path, &mut ocr_cache);
 
     results.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+    if let Ok(json) = serde_json::to_string(&ocr_cache) {
+        fs::write(&ocr_cache_path, json).ok();
+    }
 
     // Rebuild tag recency from the new results so tags that no longer exist are cleared
     let mut tag_recency: HashMap<String, SystemTime> = HashMap::new();
@@ -536,34 +654,13 @@ fn main() {
     let clean_key = target_key.replace("#", "");
     let state_path = cache_dir.join(format!("state_{}.json", clean_key));
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
+    let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
 
-    // Load the cache first so results can be served immediately on every keystroke
-    let mut cached_data_opt = None;
-    if cache_path.exists() {
-        cached_data_opt = load_cache(&cache_path);
-    }
-
-    // With a usable cache, only refresh on the first launch (empty query) so that
-    // typing never triggers a reindex. The refresh runs synchronously on this thread:
-    // it is an incremental update against an existing cache, and blocking until it
-    // finishes means Alfred renders the final list once instead of re-rendering
-    // underneath the user's cursor (which caused the cursor to snap).
-    if cached_data_opt.is_some() && query.is_empty() {
-        run_worker(target_key);
-
-        // The worker has just rewritten the cache file, so re-read it to serve the
-        // freshly indexed data rather than the copy loaded above.
-        if let Some(refreshed) = load_cache(&cache_path) {
-            cached_data_opt = Some(refreshed);
-        }
-    }
-
-    // Only show the progress screen when there is no cache to serve; otherwise the
-    // worker finishes invisibly in the background
-    if cached_data_opt.is_none() && state_path.exists() {
+    // If an indexer is actively writing, ALWAYS show the progress UI and rerun
+    if state_path.exists() {
         let data = fs::read_to_string(&state_path).unwrap_or_default();
-        let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Initializing...".to_string() });
-        
+        let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string() });
+
         let percentage = if state.total > 0 {
             (state.progress as f32 / state.total as f32) * 100.0
         } else {
@@ -571,10 +668,10 @@ fn main() {
         };
 
         let output = AlfredOutput {
-            rerun: Some(0.2), 
+            rerun: Some(0.2),
             items: vec![
-                Item::new(format!("{} {:.0}%", state.status, percentage))
-                    .set_subtitle(format!("{} of {} files parsed. Please wait...", state.progress, state.total))
+                Item::new(format!("Indexing Vault: {:.0}%", percentage))
+                    .set_subtitle(format!("{} of {} files processed. Please wait...", state.progress, state.total))
                     .set_valid(false)
             ]
         };
@@ -582,27 +679,58 @@ fn main() {
         return;
     }
 
-    // Nothing cached and no worker running: start one and show the progress UI
-    if cached_data_opt.is_none() && !state_path.exists() {
-        Command::new(env::current_exe().unwrap())
-            .arg("worker")
-            .arg(target_key)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Failed to start background worker");
+    let mut cached_data_opt = None;
+    let mut cache_mtime = SystemTime::UNIX_EPOCH;
+    if cache_path.exists() {
+        if let Ok(meta) = fs::metadata(&cache_path) {
+            cache_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        }
+        cached_data_opt = load_cache(&cache_path);
+    }
+
+    // Cold start: no cache exists at all
+    if cached_data_opt.is_none() {
+        fs::write(&state_path, r#"{"progress":0,"total":0,"status":"Starting Indexer..."}"#).ok();
+
+        if let Ok(exe) = env::current_exe() {
+            Command::new(exe)
+                .arg("worker")
+                .arg(target_key)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok();
+        }
 
         let output = AlfredOutput {
             rerun: Some(0.2),
             items: vec![
-                Item::new("Starting Indexer...")
-                    .set_subtitle("Initializing background worker to build cache. Please wait...")
+                Item::new("Indexing Vault: 0%")
+                    .set_subtitle("Initializing background worker. Please wait...")
                     .set_valid(false)
             ]
         };
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
+    }
+
+    // Cache exists: refresh silently in background on empty query if older than 60s
+    if query.is_empty() && !state_path.exists() {
+        if let Ok(elapsed) = cache_mtime.elapsed() {
+            if elapsed.as_secs() > 60 {
+                if let Ok(exe) = env::current_exe() {
+                    Command::new(exe)
+                        .arg("worker")
+                        .arg(target_key)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .ok();
+                }
+            }
+        }
     }
 
     let cached_data = cached_data_opt.unwrap();
@@ -712,6 +840,13 @@ fn main() {
     // notes that merely mention the query still surface. Every term has to appear
     // somewhere in the file; terms under two characters are too noisy to search for.
     if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
+        // Read the recognized text only here: no other code path needs it, and it is
+        // the largest file in the cache directory
+        let ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
+            .unwrap_or_default();
+
         let matchers = build_term_matchers(&title_terms);
 
         // Every term must have compiled, otherwise the search would silently
@@ -754,6 +889,7 @@ fn main() {
                                 .and_then(|m| m.modified())
                                 .unwrap_or(SystemTime::UNIX_EPOCH),
                             tags: Vec::new(),
+                            links: Vec::new(),
                             snippet: None,
                         }
                     }
@@ -761,6 +897,42 @@ fn main() {
 
                 file_result.snippet = Some(content_match.snippet);
                 results.push(file_result);
+            }
+        }
+
+        // An image is never shown on its own: only the Markdown note that embeds it
+        // becomes an item, so Alfred always opens something editable.
+        for (image_path, ocr_result) in &ocr_cache {
+            let lower_text = ocr_result.text.to_lowercase();
+            if !title_terms.iter().all(|term| lower_text.contains(*term)) {
+                continue;
+            }
+
+            let image_name = Path::new(image_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(image_path);
+
+            // Find the first line that actually contains one of the query terms to show as the snippet
+            let matching_line = ocr_result
+                .text
+                .lines()
+                .map(|l| l.trim())
+                .find(|l| {
+                    let lower_line = l.to_lowercase();
+                    title_terms.iter().any(|term| lower_line.contains(term))
+                })
+                .unwrap_or("");
+
+            for cached_file in file_lookup.values() {
+                if cached_file.links.iter().any(|l| l.eq_ignore_ascii_case(image_name)) {
+                    if results.iter().any(|res| res.path == cached_file.path) {
+                        continue;
+                    }
+                    let mut file_result = cached_file.clone();
+                    file_result.snippet = Some(format!("🖼️ {}", build_snippet(matching_line)));
+                    results.push(file_result);
+                }
             }
         }
     }
@@ -876,7 +1048,12 @@ fn main() {
 
             let item = Item::new(res.title.clone())
                 .set_subtitle(subtitle)
-                .set_arg(format!("obsidian://advanced-uri?filepath={}|{}", url_encode(&arg_path), res.title))
+                .set_arg(format!(
+                    "obsidian://advanced-uri?vault={}&filepath={}|{}",
+                    url_encode(&vault_name),
+                    url_encode(&arg_path),
+                    res.title
+                ))
                 .set_valid(true);
         
             items.push(item);

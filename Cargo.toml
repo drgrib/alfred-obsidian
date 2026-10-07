@@ -11,3 +11,6 @@ ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
+
+[build-dependencies]
+cc = "1.0"
