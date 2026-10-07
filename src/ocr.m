@@ -50,7 +50,7 @@ const char* perform_ocr(const char* image_path) {
                 
                 // Reading an embedded text layer is instant, while rendering and recognizing a
                 // page is not, so only a limited number of image-only pages get the Vision pass
-                const NSUInteger MAX_SCANNED_PAGES = 15;
+                const NSUInteger MAX_SCANNED_PAGES = 8;
                 NSUInteger scannedOcrCount = 0;
                 
                 NSMutableString *result = [NSMutableString string];
@@ -59,60 +59,67 @@ const char* perform_ocr(const char* image_path) {
                     // Every page leaves behind a rendered bitmap and a pile of Vision buffers,
                     // so they are drained before the next page starts
                     @autoreleasepool {
-                        PDFPage *page = [doc pageAtIndex:i];
-                        if (!page) continue;
-                        
-                        NSString *pageText = page.string;
-                        if (pageText && [pageText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length > 0) {
-                            [result appendFormat:@"%@\n", pageText];
-                            continue;
-                        }
-                        
-                        if (scannedOcrCount >= MAX_SCANNED_PAGES) continue;
-                        
-                        CGRect pageRect = [page boundsForBox:kPDFDisplayBoxMediaBox];
-                        
-                        // Vision reads small type far better at 144 dpi, but a poster-sized page
-                        // scaled up would allocate an enormous bitmap, so the long side is capped
-                        CGFloat scale = 2.0;
-                        CGFloat maxDim = MAX(pageRect.size.width, pageRect.size.height);
-                        if (maxDim * scale > 3000.0 && maxDim > 0.0) {
-                            scale = 3000.0 / maxDim;
-                        }
-                        size_t width = (size_t)(pageRect.size.width * scale);
-                        size_t height = (size_t)(pageRect.size.height * scale);
-                        if (width == 0 || height == 0) continue;
-                        
-                        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-                        CGContextRef ctx = CGBitmapContextCreate(NULL, width, height, 8, width * 4, colorSpace,
-                                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-                        CGColorSpaceRelease(colorSpace);
-                        if (!ctx) continue;
-                        
+                        // The whole per-page body is guarded: a page that throws is skipped
+                        // instead of costing the rest of the document
                         @try {
-                            // White background first, otherwise transparent pixels read as noise
-                            CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
-                            CGContextFillRect(ctx, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height));
-                            
-                            CGContextSaveGState(ctx);
-                            CGContextScaleCTM(ctx, scale, scale);
-                            [page drawWithBox:kPDFDisplayBoxMediaBox toContext:ctx];
-                            CGContextRestoreGState(ctx);
-                            
-                            CGImageRef rendered = CGBitmapContextCreateImage(ctx);
-                            if (rendered) {
-                                NSString *ocrText = ocr_cgimage(rendered);
-                                if (ocrText.length > 0) {
-                                    [result appendFormat:@"%@\n", ocrText];
+                            PDFPage *page = [doc pageAtIndex:i];
+                            if (page) {
+                                NSString *pageText = page.string;
+                                BOOL hasText = pageText != nil
+                                    && [pageText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length > 0;
+                                
+                                if (hasText) {
+                                    [result appendFormat:@"%@\n", pageText];
+                                } else if (scannedOcrCount < MAX_SCANNED_PAGES) {
+                                    CGRect pageRect = [page boundsForBox:kPDFDisplayBoxMediaBox];
+                                    
+                                    // 108 dpi keeps small type legible to Vision while roughly
+                                    // halving inference time per page; the long side is capped so
+                                    // an oversized page cannot allocate an enormous bitmap
+                                    CGFloat scale = 1.5;
+                                    CGFloat maxDim = MAX(pageRect.size.width, pageRect.size.height);
+                                    if (maxDim * scale > 2000.0 && maxDim > 0.0) {
+                                        scale = 2000.0 / maxDim;
+                                    }
+                                    size_t width = (size_t)(pageRect.size.width * scale);
+                                    size_t height = (size_t)(pageRect.size.height * scale);
+                                    
+                                    if (width > 0 && height > 0) {
+                                        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+                                        CGContextRef ctx = CGBitmapContextCreate(NULL, width, height, 8, width * 4, colorSpace,
+                                                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+                                        CGColorSpaceRelease(colorSpace);
+                                        
+                                        if (ctx) {
+                                            // White background first, otherwise transparent pixels read as noise
+                                            CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
+                                            CGContextFillRect(ctx, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height));
+                                            
+                                            CGContextSaveGState(ctx);
+                                            CGContextScaleCTM(ctx, scale, scale);
+                                            [page drawWithBox:kPDFDisplayBoxMediaBox toContext:ctx];
+                                            CGContextRestoreGState(ctx);
+                                            
+                                            CGImageRef rendered = CGBitmapContextCreateImage(ctx);
+                                            // The image holds its own copy of the pixels, so the
+                                            // context is released the moment it is captured
+                                            CGContextRelease(ctx);
+                                            
+                                            if (rendered) {
+                                                NSString *ocrText = ocr_cgimage(rendered);
+                                                if (ocrText.length > 0) {
+                                                    [result appendFormat:@"%@\n", ocrText];
+                                                }
+                                                CGImageRelease(rendered);
+                                                scannedOcrCount++;
+                                            }
+                                        }
+                                    }
                                 }
-                                CGImageRelease(rendered);
-                                scannedOcrCount++;
                             }
                         } @catch (NSException *e) {
-                            // One unreadable page must not cost the rest of the document
+                            // Skip the bad page and keep going
                         }
-                        
-                        CGContextRelease(ctx);
                     }
                 }
                 

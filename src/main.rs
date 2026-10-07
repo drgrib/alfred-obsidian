@@ -58,10 +58,10 @@ const DIRTY_IMAGE_THRESHOLD: usize = 1;
 /// when the file carries no usable worker pid; normally liveness is checked directly.
 const STALE_STATE_SECS: u64 = 600;
 
-/// Fallback cost of extracting the text from one image attachment, used to estimate how
-/// long the remaining attachments will take before any have actually been processed. A
-/// PDF with an embedded text layer is far cheaper than this, so the estimate errs high.
-const DEFAULT_IMAGE_OCR_SECS: f64 = 0.25;
+/// Fallback cost of extracting the text from one attachment, used to estimate how long
+/// the remaining attachments will take before any real Vision timings exist. A PDF with
+/// an embedded text layer is far cheaper than this, so the estimate errs high.
+const DEFAULT_IMAGE_OCR_SECS: f64 = 1.0;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct FileResult {
@@ -782,11 +782,34 @@ fn run_worker(target_key: &str) {
         }
     }
 
-    let images_start = Instant::now();
+    // Every note update is on disk before the first attachment is read, so a crash
+    // during OCR can never lose the markdown work that already finished
+    results.sort_by(|a, b| b.modified.cmp(&a.modified));
+    let tag_recency = build_tag_recency(&results);
+    if !scan.dirty_notes.is_empty() || scan.has_deleted {
+        write_json_atomic(&cache_path, &VaultCache {
+            files: results.clone(),
+            tag_recency: tag_recency.clone(),
+        });
+    }
+
     let mut images_done: usize = 0;
+    // Only Vision-speed work feeds the average: a PDF with an embedded text layer
+    // returns in milliseconds and would otherwise drag the estimate to nothing
+    let mut slow_ocr_secs: f64 = 0.0;
+    let mut slow_ocr_count: usize = 0;
 
     for path in &scan.dirty_images {
         let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
+
+        // ETA for the attachments left, counting the one about to be read
+        let remaining_images = total_images.saturating_sub(images_done);
+        let avg_secs = if slow_ocr_count > 0 {
+            slow_ocr_secs / slow_ocr_count as f64
+        } else {
+            DEFAULT_IMAGE_OCR_SECS
+        };
+        state.eta_secs = Some((remaining_images as f64 * avg_secs).ceil() as u64);
 
         // Heartbeat before the slow call: Alfred sees which file is being read, and the
         // state file's mtime proves the worker is still making progress
@@ -797,36 +820,46 @@ fn run_worker(target_key: &str) {
         state.status = format!("Indexing {}", file_name);
         write_json_atomic(&state_path, &state);
 
+        // Pre-checkpoint with empty text: if this file crashes PDFKit or Vision with a
+        // fatal signal, it is already recorded on disk and will not be retried forever
+        ocr_cache.insert(path.clone(), OcrResult { modified, text: String::new() });
+        write_json_atomic(&ocr_cache_path, &ocr_cache);
+
+        let item_start = Instant::now();
         let text = recognize_text(path);
-        ocr_cache.insert(path.clone(), OcrResult { modified, text });
+        let item_secs = item_start.elapsed().as_secs_f64();
+        if item_secs >= 0.1 {
+            slow_ocr_secs += item_secs;
+            slow_ocr_count += 1;
+        }
+
+        if !text.is_empty() {
+            ocr_cache.insert(path.clone(), OcrResult { modified, text });
+            write_json_atomic(&ocr_cache_path, &ocr_cache);
+        }
 
         images_done += 1;
         state.progress += 1;
 
-        // With the notes finished, the only work left is the remaining attachments. The
-        // observed average is floored at the default cost so a run of tiny files cannot
-        // collapse the estimate to nothing.
-        let observed_avg = images_start.elapsed().as_secs_f64() / images_done.max(1) as f64;
-        let blended_avg = observed_avg.max(DEFAULT_IMAGE_OCR_SECS);
+        // Re-estimate with whatever the file just taught us about Vision's speed
         let remaining_images = total_images.saturating_sub(images_done);
-        state.eta_secs = Some((remaining_images as f64 * blended_avg).ceil() as u64);
+        let avg_secs = if slow_ocr_count > 0 {
+            slow_ocr_secs / slow_ocr_count as f64
+        } else {
+            DEFAULT_IMAGE_OCR_SECS
+        };
+        state.eta_secs = Some((remaining_images as f64 * avg_secs).ceil() as u64);
 
         write_json_atomic(&state_path, &state);
-
-        // Checkpoint every attachment so an interrupted run keeps the OCR it paid for
-        write_json_atomic(&ocr_cache_path, &ocr_cache);
     }
 
     // Entries whose files vanished from disk are dropped rather than kept forever
     ocr_cache.retain(|path, _| scan.images.contains_key(path));
 
-    results.sort_by(|a, b| b.modified.cmp(&a.modified));
-
     write_json_atomic(&ocr_cache_path, &ocr_cache);
 
-    // Rebuild tag recency from the new results so tags that no longer exist are cleared
-    let tag_recency = build_tag_recency(&results);
-
+    // The sort and tag recency were computed when the notes finished; reading attachments
+    // changes neither, so the values from before the OCR pass still hold
     write_json_atomic(&cache_path, &VaultCache { files: results, tag_recency });
     // state_path is removed by the guard here, whichever way the worker ended
 }
@@ -936,12 +969,18 @@ fn main() {
                 format!("{} Please wait...", state.status)
             };
 
-            // The worker rewrites its own ETA as it goes; counting the state file's age
-            // off it keeps the number ticking down while one slow file is being read
+            // The worker rewrites its own ETA as it goes; counting the state file's age off
+            // it keeps the number ticking while one slow file is being read. Once a file
+            // outruns the estimate there is nothing left to count, so the countdown is
+            // dropped rather than left frozen at 01s.
             let title = match state.eta_secs {
                 Some(eta) => {
-                    let remaining = eta.saturating_sub(state_age_secs).max(1);
-                    format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(remaining))
+                    let remaining = eta.saturating_sub(state_age_secs);
+                    if remaining > 0 {
+                        format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(remaining))
+                    } else {
+                        format!("Indexing Vault: {:.0}%", percentage)
+                    }
                 }
                 None => format!("Indexing Vault: {:.0}%", percentage),
             };
