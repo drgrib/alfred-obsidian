@@ -47,17 +47,20 @@ const MAX_CONTENT_MATCHES: usize = 50;
 /// instead of being applied inline while the user waits.
 const DIRTY_FILE_THRESHOLD: usize = 10;
 
-/// Number of changed images above which indexing is handed to the background worker.
-/// Kept separate from the overall threshold because every image costs a Vision OCR
-/// call, which is far slower than parsing a note.
+/// Number of changed attachments above which indexing is handed to the background worker.
+/// Kept separate from the overall threshold because every image (or scanned PDF page)
+/// costs a Vision pass, which is far slower than parsing a note.
 const DIRTY_IMAGE_THRESHOLD: usize = 1;
 
 /// A worker's state file older than this (in seconds) is treated as abandoned, since
 /// a healthy worker rewrites it constantly while it indexes.
-const STALE_STATE_SECS: u64 = 30;
+/// Fallback age (in seconds) at which a state file is treated as abandoned. Only used
+/// when the file carries no usable worker pid; normally liveness is checked directly.
+const STALE_STATE_SECS: u64 = 600;
 
-/// Fallback cost of OCR-ing one image, used to estimate how long the remaining images
-/// will take before any have actually been processed.
+/// Fallback cost of extracting the text from one image attachment, used to estimate how
+/// long the remaining attachments will take before any have actually been processed. A
+/// PDF with an embedded text layer is far cheaper than this, so the estimate errs high.
 const DEFAULT_IMAGE_OCR_SECS: f64 = 0.25;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -66,16 +69,19 @@ struct FileResult {
     path: String,
     modified: SystemTime,
     tags: Vec<String>,
-    /// Basenames of every file this note embeds (`![[image.png]]` or `![](image.png)`),
-    /// used to route OCR hits back to the note that shows the image.
+    /// Basenames of every file this note embeds (`![[image.png]]`, `![](image.png)` or
+    /// `![[paper.pdf]]`), used to route attachment text hits back to the note that
+    /// displays the attachment. Aliases and fragments are stripped, so
+    /// `[[paper.pdf#page=3|See p3]]` is stored as `paper.pdf`.
     links: Vec<String>,
     /// Set only for notes found via content search; never persisted to the cache.
     #[serde(skip)]
     snippet: Option<String>,
 }
 
-/// Text recognized from an image, kept so the same image is never OCR'd twice
-/// while its modification time stays the same.
+/// Text extracted from an attachment, kept so the same file is never read twice while
+/// its modification time stays the same. For images this is Vision output; for PDFs it
+/// is the embedded text layer, or Vision output for pages that turn out to be scans.
 #[derive(Serialize, Deserialize, Clone)]
 struct OcrResult {
     modified: SystemTime,
@@ -105,6 +111,10 @@ struct State {
     /// files have been processed to make a guess.
     #[serde(default)]
     eta_secs: Option<u64>,
+    /// Pid of the worker that owns this file, so main() can ask the OS whether the
+    /// worker is still alive instead of guessing from the file's age.
+    #[serde(default)]
+    worker_pid: Option<u32>,
 }
 
 extern "C" {
@@ -112,10 +122,16 @@ extern "C" {
     fn free_ocr_string(ptr: *mut c_char);
 }
 
-/// Recognizes the text in an image through the native Vision framework.
+extern "C" {
+    /// Signal 0 is a no-op that still fails with ESRCH when the pid does not exist,
+    /// which makes it a cheap liveness probe.
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+/// Extracts the text of an attachment through the native Vision and PDFKit frameworks.
 ///
-/// Returns an empty string when the image cannot be read, so a failed recognition
-/// is cached as "no text" rather than retried on every pass.
+/// Returns an empty string when the file cannot be read, so a failed extraction is
+/// cached as "no text" rather than retried on every pass.
 fn recognize_text(path: &str) -> String {
     if let Ok(c_path) = CString::new(path) {
         unsafe {
@@ -305,10 +321,12 @@ fn get_workflow_cache_dir() -> PathBuf {
     path
 }
 
-/// True when the file is an image format the OCR CLI can read.
+/// True when the file is an attachment whose text can be extracted: raster images go
+/// through Vision, and PDFs use their embedded text layer with Vision as a fallback for
+/// pages that turn out to be scans.
 fn is_supported_image(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"),
+        Some(ext) => matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "pdf"),
         None => false,
     }
 }
@@ -317,18 +335,18 @@ fn is_supported_image(path: &Path) -> bool {
 struct VaultScan {
     /// Every markdown note on disk, with its modification time.
     notes: HashMap<String, SystemTime>,
-    /// Every OCR-able image on disk, with its modification time.
+    /// Every image or PDF attachment on disk, with its modification time.
     images: HashMap<String, SystemTime>,
     /// Notes that are new or whose modification time no longer matches the cache.
     dirty_notes: Vec<String>,
-    /// Images that are new or whose modification time no longer matches the OCR cache.
+    /// Attachments that are new or whose modification time no longer matches the cache.
     dirty_images: Vec<String>,
     /// True when a cached entry points at a file that is no longer on disk.
     has_deleted: bool,
 }
 
 /// Walks the vault once (skipping hidden dot-directories) and reports which notes and
-/// images differ from what the caches already hold, so only those need re-reading.
+/// attachments differ from what the caches already hold, so only those need re-reading.
 fn scan_vault(dir: &Path, cached_files: &[FileResult], ocr_cache: &OcrCache) -> VaultScan {
     let mut scan = VaultScan {
         notes: HashMap::new(),
@@ -374,8 +392,8 @@ fn scan_vault(dir: &Path, cached_files: &[FileResult], ocr_cache: &OcrCache) -> 
     scan
 }
 
-/// Recursively records every markdown note and supported image below `dir`, skipping
-/// hidden directories the way the rest of the workflow does.
+/// Recursively records every markdown note and supported attachment (images and PDFs)
+/// below `dir`, skipping hidden directories the way the rest of the workflow does.
 fn collect_vault_files(
     dir: &Path,
     notes: &mut HashMap<String, SystemTime>,
@@ -519,11 +537,16 @@ fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
                 ptr = &ptr[start + 2..];
                 if let Some(end) = ptr.find("]]") {
                     let content = &ptr[..end];
-                    let target = content.split('|').next().unwrap_or(content).trim();
+                    // Drop the display alias first, then any #page= / #anchor fragment,
+                    // so `[[paper.pdf#page=3|See p3]]` still resolves to paper.pdf
+                    let target = content.split('|').next().unwrap_or(content);
+                    let target = target.split('#').next().unwrap_or(target).trim();
                     if let Some(name) = Path::new(target).file_name().and_then(|n| n.to_str()) {
                         links.insert(name.to_string());
                     }
                     ptr = &ptr[end + 2..];
+                } else {
+                    break;
                 }
             }
 
@@ -531,11 +554,15 @@ fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
             while let Some(start) = ptr.find("](") {
                 ptr = &ptr[start + 2..];
                 if let Some(end) = ptr.find(')') {
+                    // Same idea here: ![](paper.pdf#page=3) must still match paper.pdf
                     let target = &ptr[..end];
+                    let target = target.split('#').next().unwrap_or(target).trim();
                     if let Some(name) = Path::new(target).file_name().and_then(|n| n.to_str()) {
                         links.insert(name.replace("%20", " "));
                     }
                     ptr = &ptr[end + 1..];
+                } else {
+                    break;
                 }
             }
         }
@@ -684,7 +711,9 @@ fn run_worker(target_key: &str) {
         .map(|state| state.total)
         .unwrap_or(0);
 
-    let mut state = State { progress: 0, total: existing_total, status: "Scanning vault...".to_string(), eta_secs: None };
+    let mut state = State { progress: 0, total: existing_total, status: "Scanning vault...".to_string(), eta_secs: None, worker_pid: None };
+    // main() probes this pid to tell a slow worker apart from a dead one
+    state.worker_pid = Some(std::process::id());
     // Written unconditionally so the file's mtime is refreshed the moment the worker
     // starts, keeping main()'s staleness check from deleting it mid-run
     write_json_atomic(&state_path, &state);
@@ -729,7 +758,7 @@ fn run_worker(target_key: &str) {
     let total_notes = scan.dirty_notes.len();
     let total_images = scan.dirty_images.len();
 
-    // Notes are parsed far faster than images are OCR'd, so each phase is measured
+    // Notes are parsed far faster than attachments are read, so each phase is measured
     // separately rather than sharing one average that neither phase fits
     let notes_start = Instant::now();
     let mut notes_done: usize = 0;
@@ -742,7 +771,7 @@ fn run_worker(target_key: &str) {
         state.progress += 1;
         // Small batches are reported file by file; larger ones every 25 files
         if state.total < 100 || state.progress % 25 == 0 {
-            // The images have not started yet, so they are costed at the default rate
+            // The attachments have not started yet, so they are costed at the default rate
             let remaining_notes = total_notes.saturating_sub(notes_done);
             let avg_note_secs = notes_start.elapsed().as_secs_f64() / notes_done as f64;
             let est_secs = (remaining_notes as f64 * avg_note_secs)
@@ -758,24 +787,34 @@ fn run_worker(target_key: &str) {
 
     for path in &scan.dirty_images {
         let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
+
+        // Heartbeat before the slow call: Alfred sees which file is being read, and the
+        // state file's mtime proves the worker is still making progress
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+        state.status = format!("Indexing {}", file_name);
+        write_json_atomic(&state_path, &state);
+
         let text = recognize_text(path);
         ocr_cache.insert(path.clone(), OcrResult { modified, text });
 
         images_done += 1;
         state.progress += 1;
 
-        // With the notes finished, the only work left is the remaining images
+        // With the notes finished, the only work left is the remaining attachments. The
+        // observed average is floored at the default cost so a run of tiny files cannot
+        // collapse the estimate to nothing.
+        let observed_avg = images_start.elapsed().as_secs_f64() / images_done.max(1) as f64;
+        let blended_avg = observed_avg.max(DEFAULT_IMAGE_OCR_SECS);
         let remaining_images = total_images.saturating_sub(images_done);
-        let avg_image_secs = images_start.elapsed().as_secs_f64() / images_done as f64;
-        state.eta_secs = Some((remaining_images as f64 * avg_image_secs).ceil() as u64);
+        state.eta_secs = Some((remaining_images as f64 * blended_avg).ceil() as u64);
 
-        // OCR is slow enough that every image is worth reporting
         write_json_atomic(&state_path, &state);
 
-        // Checkpoint so an interrupted run keeps the OCR work it already paid for
-        if images_done % 20 == 0 {
-            write_json_atomic(&ocr_cache_path, &ocr_cache);
-        }
+        // Checkpoint every attachment so an interrupted run keeps the OCR it paid for
+        write_json_atomic(&ocr_cache_path, &ocr_cache);
     }
 
     // Entries whose files vanished from disk are dropped rather than kept forever
@@ -850,9 +889,9 @@ fn main() {
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
     let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
 
-    // If an indexer is actively writing, ALWAYS show the progress UI and rerun. A worker
-    // that was killed leaves its state file behind, which would pin the UI to a progress
-    // bar forever, so a file no worker has touched for STALE_STATE_SECS is discarded.
+    // If an indexer is actively writing, ALWAYS show the progress UI and rerun. The age
+    // of the state file only matters when it has no usable pid: normally the recorded
+    // worker pid is probed directly, so a slow worker is never mistaken for a dead one.
     if state_path.exists() {
         let state_age_secs = fs::metadata(&state_path)
             .and_then(|meta| meta.modified())
@@ -861,11 +900,27 @@ fn main() {
             .map(|elapsed| elapsed.as_secs())
             .unwrap_or(0);
 
-        if state_age_secs > STALE_STATE_SECS {
+        let parsed_state: Option<State> = fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|data| serde_json::from_str::<State>(&data).ok());
+
+        // Signal 0 checks existence only; it succeeds while the worker is running
+        let worker_pid = parsed_state.as_ref().and_then(|state| state.worker_pid);
+        let worker_alive = match worker_pid {
+            Some(pid) => unsafe { kill(pid as i32, 0) == 0 },
+            None => false,
+        };
+
+        let is_stale = match worker_pid {
+            Some(_) => !worker_alive,
+            // No pid to probe (state file from an older build, or unreadable)
+            None => state_age_secs > STALE_STATE_SECS,
+        };
+
+        if is_stale {
             fs::remove_file(&state_path).ok();
         } else {
-            let data = fs::read_to_string(&state_path).unwrap_or_default();
-            let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string(), eta_secs: None });
+            let state = parsed_state.unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None });
 
             let percentage = if state.total > 0 {
                 (state.progress as f32 / state.total as f32) * 100.0
@@ -881,9 +936,13 @@ fn main() {
                 format!("{} Please wait...", state.status)
             };
 
-            // The ETA only appears once the worker has processed enough files to guess
+            // The worker rewrites its own ETA as it goes; counting the state file's age
+            // off it keeps the number ticking down while one slow file is being read
             let title = match state.eta_secs {
-                Some(eta) => format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(eta)),
+                Some(eta) => {
+                    let remaining = eta.saturating_sub(state_age_secs).max(1);
+                    format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(remaining))
+                }
                 None => format!("Indexing Vault: {:.0}%", percentage),
             };
 
@@ -907,7 +966,7 @@ fn main() {
 
     // Cold start: no cache exists at all
     if cached_data_opt.is_none() {
-        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string(), eta_secs: None });
+        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string(), eta_secs: None, worker_pid: None });
 
         let spawned = match env::current_exe() {
             Ok(exe) => Command::new(exe)
@@ -953,9 +1012,10 @@ fn main() {
             let dirty_count = scan.dirty_notes.len() + scan.dirty_images.len();
 
             if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
-                // Too much work to finish while the user waits: hand it to the worker. Images
-                // get their own limit because each one costs a Vision OCR call.
-                let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string(), eta_secs: None };
+                // Too much work to finish while the user waits: hand it to the worker.
+                // Attachments get their own limit because each image or scanned PDF page
+                // costs a Vision pass.
+                let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None };
                 write_json_atomic(&state_path, &state);
 
                 let spawned = match env::current_exe() {
@@ -1026,7 +1086,7 @@ fn main() {
                 cached_data.tag_recency = build_tag_recency(&cached_data.files);
 
                 write_json_atomic(&cache_path, &cached_data);
-                // The OCR cache is only rewritten when images changed or entries were dropped
+                // The attachment cache is only rewritten when attachments changed or dropped
                 if !scan.dirty_images.is_empty() || scan.has_deleted {
                     write_json_atomic(&ocr_cache_path, &ocr_cache);
                 }
@@ -1129,7 +1189,7 @@ fn main() {
             .any(|res| res.title.eq_ignore_ascii_case(&title_string));
 
     // Built from `all_files` rather than by narrowing it, so the list below can still be
-    // extended with content and OCR hits for notes the filter dropped
+    // extended with content and attachment hits for notes the filter dropped
     let mut results: Vec<FileResult> = if is_create_only {
         Vec::new()
     } else if is_empty_search {
@@ -1154,15 +1214,15 @@ fn main() {
     // somewhere in the file; terms under two characters are too noisy to search for.
     if !is_create_only && results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
         // Keyed by borrowed path and holding a borrowed file, so building the lookup costs
-        // no clones at all. It spans the whole vault, which is what lets a content or OCR
-        // hit resolve for a note the title/tag filter dropped.
+        // no clones at all. It spans the whole vault, which is what lets a content or
+        // attachment hit resolve for a note the title/tag filter dropped.
         let file_lookup: HashMap<&str, &FileResult> = all_files
             .iter()
             .map(|res| (res.path.as_str(), res))
             .collect();
 
-        // Read the recognized text only here: no other code path needs it, and it is
-        // the largest file in the cache directory
+        // Read the extracted attachment text only here: no other code path needs it, and
+        // it is the largest file in the cache directory
         let ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
             .ok()
             .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
@@ -1239,8 +1299,9 @@ fn main() {
             }
         }
 
-        // An image is never shown on its own: only the Markdown note that embeds it
-        // becomes an item, so Alfred always opens something editable.
+        // An attachment is never shown on its own: only the Markdown note that embeds it
+        // becomes an item, so Alfred always opens something editable. This covers image
+        // embeds and PDF attachments alike, since both are indexed the same way.
         for (image_path, ocr_result) in &ocr_cache {
             let lower_text = ocr_result.text.to_lowercase();
             if !title_terms.iter().all(|term| lower_text.contains(*term)) {
@@ -1281,8 +1342,16 @@ fn main() {
                     continue;
                 }
 
+                // A PDF reads as a document, anything else as an image
+                let is_pdf = Path::new(image_path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false);
+                let icon = if is_pdf { "📄" } else { "🖼️" };
+
                 let mut file_result = cached_file.clone();
-                file_result.snippet = Some(format!("🖼️ {}", build_snippet(matching_line)));
+                file_result.snippet = Some(format!("{} {}", icon, build_snippet(matching_line)));
                 results.push(file_result);
             }
         }
