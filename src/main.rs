@@ -12,10 +12,11 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::raw::c_char;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 fn url_encode(input: &str) -> String {
     let mut encoded = String::new();
@@ -54,6 +55,10 @@ const DIRTY_IMAGE_THRESHOLD: usize = 1;
 /// A worker's state file older than this (in seconds) is treated as abandoned, since
 /// a healthy worker rewrites it constantly while it indexes.
 const STALE_STATE_SECS: u64 = 30;
+
+/// Fallback cost of OCR-ing one image, used to estimate how long the remaining images
+/// will take before any have actually been processed.
+const DEFAULT_IMAGE_OCR_SECS: f64 = 0.25;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct FileResult {
@@ -96,6 +101,10 @@ struct State {
     progress: u32,
     total: u32,
     status: String,
+    /// Estimated seconds remaining, shown beside the percentage. Absent until enough
+    /// files have been processed to make a guess.
+    #[serde(default)]
+    eta_secs: Option<u64>,
 }
 
 extern "C" {
@@ -604,6 +613,21 @@ fn load_cache(cache_path: &Path) -> Option<VaultCache> {
     }
 }
 
+/// Formats a remaining-time estimate, showing only the units that are needed.
+fn format_eta(secs: u64) -> String {
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+
+    if hours > 0 {
+        format!("{}h{:02}m{:02}s", hours, minutes, seconds)
+    } else if minutes > 0 {
+        format!("{:02}m{:02}s", minutes, seconds)
+    } else {
+        format!("{:02}s", seconds)
+    }
+}
+
 /// Serializes `value` to JSON and writes it to `path` without ever exposing a partial
 /// file: the bytes land in a sibling `.json.tmp` file and are then renamed over the
 /// target, so Alfred's 0.2s rerun polls read either the old file or the complete new one.
@@ -660,7 +684,7 @@ fn run_worker(target_key: &str) {
         .map(|state| state.total)
         .unwrap_or(0);
 
-    let mut state = State { progress: 0, total: existing_total, status: "Scanning vault...".to_string() };
+    let mut state = State { progress: 0, total: existing_total, status: "Scanning vault...".to_string(), eta_secs: None };
     // Written unconditionally so the file's mtime is refreshed the moment the worker
     // starts, keeping main()'s staleness check from deleting it mid-run
     write_json_atomic(&state_path, &state);
@@ -702,25 +726,56 @@ fn run_worker(target_key: &str) {
         }
     }
 
+    let total_notes = scan.dirty_notes.len();
+    let total_images = scan.dirty_images.len();
+
+    // Notes are parsed far faster than images are OCR'd, so each phase is measured
+    // separately rather than sharing one average that neither phase fits
+    let notes_start = Instant::now();
+    let mut notes_done: usize = 0;
+
     for path in &scan.dirty_notes {
         let modified = scan.notes.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
         results.push(parse_note(path, modified));
 
+        notes_done += 1;
         state.progress += 1;
         // Small batches are reported file by file; larger ones every 25 files
         if state.total < 100 || state.progress % 25 == 0 {
+            // The images have not started yet, so they are costed at the default rate
+            let remaining_notes = total_notes.saturating_sub(notes_done);
+            let avg_note_secs = notes_start.elapsed().as_secs_f64() / notes_done as f64;
+            let est_secs = (remaining_notes as f64 * avg_note_secs)
+                + (total_images as f64 * DEFAULT_IMAGE_OCR_SECS);
+            state.eta_secs = Some(est_secs.ceil() as u64);
+
             write_json_atomic(&state_path, &state);
         }
     }
+
+    let images_start = Instant::now();
+    let mut images_done: usize = 0;
 
     for path in &scan.dirty_images {
         let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
         let text = recognize_text(path);
         ocr_cache.insert(path.clone(), OcrResult { modified, text });
 
-        // OCR is slow enough that every image is worth reporting
+        images_done += 1;
         state.progress += 1;
+
+        // With the notes finished, the only work left is the remaining images
+        let remaining_images = total_images.saturating_sub(images_done);
+        let avg_image_secs = images_start.elapsed().as_secs_f64() / images_done as f64;
+        state.eta_secs = Some((remaining_images as f64 * avg_image_secs).ceil() as u64);
+
+        // OCR is slow enough that every image is worth reporting
         write_json_atomic(&state_path, &state);
+
+        // Checkpoint so an interrupted run keeps the OCR work it already paid for
+        if images_done % 20 == 0 {
+            write_json_atomic(&ocr_cache_path, &ocr_cache);
+        }
     }
 
     // Entries whose files vanished from disk are dropped rather than kept forever
@@ -810,7 +865,7 @@ fn main() {
             fs::remove_file(&state_path).ok();
         } else {
             let data = fs::read_to_string(&state_path).unwrap_or_default();
-            let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string() });
+            let state = serde_json::from_str::<State>(&data).unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string(), eta_secs: None });
 
             let percentage = if state.total > 0 {
                 (state.progress as f32 / state.total as f32) * 100.0
@@ -826,10 +881,16 @@ fn main() {
                 format!("{} Please wait...", state.status)
             };
 
+            // The ETA only appears once the worker has processed enough files to guess
+            let title = match state.eta_secs {
+                Some(eta) => format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(eta)),
+                None => format!("Indexing Vault: {:.0}%", percentage),
+            };
+
             let output = AlfredOutput {
                 rerun: Some(0.2),
                 items: vec![
-                    Item::new(format!("Indexing Vault: {:.0}%", percentage))
+                    Item::new(title)
                         .set_subtitle(subtitle)
                         .set_valid(false)
                 ]
@@ -846,7 +907,7 @@ fn main() {
 
     // Cold start: no cache exists at all
     if cached_data_opt.is_none() {
-        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string() });
+        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string(), eta_secs: None });
 
         let spawned = match env::current_exe() {
             Ok(exe) => Command::new(exe)
@@ -855,6 +916,8 @@ fn main() {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
+                // Own process group, so closing Alfred cannot signal the worker
+                .process_group(0)
                 .spawn()
                 .is_ok(),
             Err(_) => false,
@@ -892,7 +955,7 @@ fn main() {
             if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
                 // Too much work to finish while the user waits: hand it to the worker. Images
                 // get their own limit because each one costs a Vision OCR call.
-                let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string() };
+                let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string(), eta_secs: None };
                 write_json_atomic(&state_path, &state);
 
                 let spawned = match env::current_exe() {
@@ -902,6 +965,8 @@ fn main() {
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
+                        // Own process group, so closing Alfred cannot signal the worker
+                        .process_group(0)
                         .spawn()
                         .is_ok(),
                     Err(_) => false,
