@@ -53,7 +53,7 @@ const DIRTY_IMAGE_THRESHOLD: usize = 1;
 
 /// A worker's state file older than this (in seconds) is treated as abandoned, since
 /// a healthy worker rewrites it constantly while it indexes.
-const STALE_STATE_SECS: u64 = 300;
+const STALE_STATE_SECS: u64 = 30;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct FileResult {
@@ -320,11 +320,7 @@ struct VaultScan {
 
 /// Walks the vault once (skipping hidden dot-directories) and reports which notes and
 /// images differ from what the caches already hold, so only those need re-reading.
-fn scan_vault(
-    dir: &Path,
-    cached_notes: &HashMap<String, FileResult>,
-    ocr_cache: &OcrCache,
-) -> VaultScan {
+fn scan_vault(dir: &Path, cached_files: &[FileResult], ocr_cache: &OcrCache) -> VaultScan {
     let mut scan = VaultScan {
         notes: HashMap::new(),
         images: HashMap::new(),
@@ -335,9 +331,16 @@ fn scan_vault(
 
     collect_vault_files(dir, &mut scan.notes, &mut scan.images);
 
+    // Borrowed paths and copied timestamps, so no FileResult, String or Vec is cloned
+    // just to compare modification times
+    let mut cached_mtimes: HashMap<&str, SystemTime> = HashMap::with_capacity(cached_files.len());
+    for res in cached_files {
+        cached_mtimes.insert(res.path.as_str(), res.modified);
+    }
+
     for (path, modified) in &scan.notes {
-        let is_dirty = match cached_notes.get(path) {
-            Some(cached) => cached.modified != *modified,
+        let is_dirty = match cached_mtimes.get(path.as_str()) {
+            Some(cached) => *cached != *modified,
             None => true,
         };
         if is_dirty {
@@ -356,7 +359,7 @@ fn scan_vault(
     }
 
     // Anything the caches remember but the walk never saw has been deleted
-    scan.has_deleted = cached_notes.keys().any(|path| !scan.notes.contains_key(path))
+    scan.has_deleted = cached_files.iter().any(|res| !scan.notes.contains_key(&res.path))
         || ocr_cache.keys().any(|path| !scan.images.contains_key(path));
 
     scan
@@ -375,14 +378,36 @@ fn collect_vault_files(
     };
 
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        // file_type() comes from the directory entry itself, so it needs no extra stat
+        // and never follows symlinks, which is what stops a symlinked directory from
+        // walking the vault forever
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
                 if !name.starts_with('.') {
-                    collect_vault_files(&path, notes, images);
+                    collect_vault_files(&entry.path(), notes, images);
                 }
             }
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            continue;
+        }
+
+        // Anything that is not a plain file (socket, fifo, symlink) is skipped
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let is_note = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+
+        if is_note {
             // entry.metadata() stats through the directory entry descriptor, which on
             // macOS avoids re-resolving the full path for every file in the vault
             let modified = entry
@@ -588,10 +613,23 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) {
         Err(_) => return,
     };
 
-    let tmp_path = path.with_extension("json.tmp");
+    // The pid keeps two processes (main and a worker) from sharing one temporary file
+    let tmp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
     if fs::write(&tmp_path, json).is_ok() {
         // A failed rename leaves the previous file in place, which is the safe outcome
-        fs::rename(&tmp_path, path).ok();
+        if fs::rename(&tmp_path, path).is_err() {
+            fs::remove_file(&tmp_path).ok();
+        }
+    }
+}
+
+/// Removes the worker's state file when the worker ends, whether it finished normally,
+/// bailed out early, or panicked, so a dead worker can never pin the UI to a progress bar.
+struct StateFileGuard(PathBuf);
+
+impl Drop for StateFileGuard {
+    fn drop(&mut self) {
+        fs::remove_file(&self.0).ok();
     }
 }
 
@@ -606,6 +644,8 @@ fn run_worker(target_key: &str) {
     let cache_dir = get_workflow_cache_dir();
     let clean_key = target_key.replace("#", "");
     let state_path = cache_dir.join(format!("state_{}.json", clean_key));
+    // Cleans up state_path no matter how this worker ends, including a panic
+    let _guard = StateFileGuard(state_path.clone());
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
 
     let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
@@ -619,34 +659,36 @@ fn run_worker(target_key: &str) {
         .unwrap_or(0);
 
     let mut state = State { progress: 0, total: existing_total, status: "Scanning vault...".to_string() };
-    if existing_total == 0 {
-        write_json_atomic(&state_path, &state);
-    }
+    // Written unconditionally so the file's mtime is refreshed the moment the worker
+    // starts, keeping main()'s staleness check from deleting it mid-run
+    write_json_atomic(&state_path, &state);
 
     // Load both caches first: only the files that differ from them need real work
-    let existing_cache: Option<VaultCache> = fs::read_to_string(&cache_path)
+    let cached_files: Vec<FileResult> = fs::read_to_string(&cache_path)
         .ok()
-        .and_then(|content| serde_json::from_str::<VaultCache>(&content).ok());
-
-    let mut old_cache: HashMap<String, FileResult> = HashMap::new();
-    if let Some(cache) = existing_cache {
-        for file in cache.files {
-            old_cache.insert(file.path.clone(), file);
-        }
-    }
+        .and_then(|content| serde_json::from_str::<VaultCache>(&content).ok())
+        .map(|cache| cache.files)
+        .unwrap_or_default();
 
     let mut ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
         .ok()
         .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
         .unwrap_or_default();
 
-    let scan = scan_vault(vault_dir, &old_cache, &ocr_cache);
+    let scan = scan_vault(vault_dir, &cached_files, &ocr_cache);
 
     // Progress covers only the files that actually get read, not the whole vault
     state.total = (scan.dirty_notes.len() + scan.dirty_images.len()) as u32;
     state.progress = 0;
     state.status = "Indexing vault...".to_string();
     write_json_atomic(&state_path, &state);
+
+    // The cached entries are only needed as a lookup now that the scan is done, so the
+    // vector is consumed into the map rather than being cloned into it
+    let mut old_cache: HashMap<String, FileResult> = HashMap::with_capacity(cached_files.len());
+    for file in cached_files {
+        old_cache.insert(file.path.clone(), file);
+    }
 
     // Unchanged notes are carried over untouched, so nothing re-reads them
     let mut results: Vec<FileResult> = Vec::with_capacity(scan.notes.len());
@@ -690,7 +732,7 @@ fn run_worker(target_key: &str) {
     let tag_recency = build_tag_recency(&results);
 
     write_json_atomic(&cache_path, &VaultCache { files: results, tag_recency });
-    fs::remove_file(&state_path).ok();
+    // state_path is removed by the guard here, whichever way the worker ended
 }
 
 fn main() {
@@ -753,7 +795,7 @@ fn main() {
 
     // If an indexer is actively writing, ALWAYS show the progress UI and rerun. A worker
     // that was killed leaves its state file behind, which would pin the UI to a progress
-    // bar forever, so a file no worker has touched for five minutes is discarded.
+    // bar forever, so a file no worker has touched for STALE_STATE_SECS is discarded.
     if state_path.exists() {
         let state_age_secs = fs::metadata(&state_path)
             .and_then(|meta| meta.modified())
@@ -774,11 +816,19 @@ fn main() {
                 0.0
             };
 
+            // With no total yet the status alone explains what is happening, which is
+            // what the cold-start and pre-scan states look like
+            let subtitle = if state.total > 0 {
+                format!("{} ({} of {} files processed). Please wait...", state.status, state.progress, state.total)
+            } else {
+                format!("{} Please wait...", state.status)
+            };
+
             let output = AlfredOutput {
                 rerun: Some(0.2),
                 items: vec![
                     Item::new(format!("Indexing Vault: {:.0}%", percentage))
-                        .set_subtitle(format!("{} of {} files processed. Please wait...", state.progress, state.total))
+                        .set_subtitle(subtitle)
                         .set_valid(false)
                 ]
             };
@@ -796,15 +846,21 @@ fn main() {
     if cached_data_opt.is_none() {
         write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string() });
 
-        if let Ok(exe) = env::current_exe() {
-            Command::new(exe)
+        let spawned = match env::current_exe() {
+            Ok(exe) => Command::new(exe)
                 .arg("worker")
                 .arg(target_key)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
-                .ok();
+                .is_ok(),
+            Err(_) => false,
+        };
+
+        // A worker that never started would leave the UI pinned to a progress bar
+        if !spawned {
+            fs::remove_file(&state_path).ok();
         }
 
         let output = AlfredOutput {
@@ -828,13 +884,7 @@ fn main() {
                 .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
                 .unwrap_or_default();
 
-            let note_index: HashMap<String, FileResult> = cached_data
-                .files
-                .iter()
-                .map(|res| (res.path.clone(), res.clone()))
-                .collect();
-
-            let scan = scan_vault(vault_dir, &note_index, &ocr_cache);
+            let scan = scan_vault(vault_dir, &cached_data.files, &ocr_cache);
             let dirty_count = scan.dirty_notes.len() + scan.dirty_images.len();
 
             if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
@@ -843,15 +893,21 @@ fn main() {
                 let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string() };
                 write_json_atomic(&state_path, &state);
 
-                if let Ok(exe) = env::current_exe() {
-                    Command::new(exe)
+                let spawned = match env::current_exe() {
+                    Ok(exe) => Command::new(exe)
                         .arg("worker")
                         .arg(target_key)
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn()
-                        .ok();
+                        .is_ok(),
+                    Err(_) => false,
+                };
+
+                // A worker that never started would leave the UI pinned to a progress bar
+                if !spawned {
+                    fs::remove_file(&state_path).ok();
                 }
 
                 let output = AlfredOutput {
@@ -919,14 +975,6 @@ fn main() {
     let mut results = cached_data.files;
     let tag_recency = cached_data.tag_recency;
     let mut items = Vec::new();
-
-    // Snapshot of every cached file keyed by path, taken before `results` is narrowed
-    // by the title/tag filter so content-search hits can still be resolved back to
-    // their cached title, modified time and tags.
-    let file_lookup: HashMap<String, FileResult> = results
-        .iter()
-        .map(|res| (res.path.clone(), res.clone()))
-        .collect();
 
     let ends_with_space = raw_query.ends_with(' ');
     let last_term = all_terms.last().copied().unwrap_or("");
@@ -1022,6 +1070,15 @@ fn main() {
     // notes that merely mention the query still surface. Every term has to appear
     // somewhere in the file; terms under two characters are too noisy to search for.
     if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
+        // Snapshot of every cached file keyed by path, taken before `results` is narrowed
+        // so content-search hits can still be resolved back to their cached title, modified
+        // time and tags. Built here rather than up front so a plain hotkey press or tag
+        // autocomplete never pays for cloning the whole file list.
+        let file_lookup: HashMap<String, FileResult> = results
+            .iter()
+            .map(|res| (res.path.clone(), res.clone()))
+            .collect();
+
         // Read the recognized text only here: no other code path needs it, and it is
         // the largest file in the cache directory
         let ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
