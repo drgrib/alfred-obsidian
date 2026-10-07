@@ -1087,7 +1087,7 @@ fn main() {
     // Full-text fallback: when title/tag matches are sparse, grep the note bodies so
     // notes that merely mention the query still surface. Every term has to appear
     // somewhere in the file; terms under two characters are too noisy to search for.
-    if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
+    if !is_create_only && results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
         // Keyed by borrowed path and holding a borrowed file, so building the lookup costs
         // no clones at all. It spans the whole vault, which is what lets a content or OCR
         // hit resolve for a note the title/tag filter dropped.
