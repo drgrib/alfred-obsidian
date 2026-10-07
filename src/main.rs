@@ -634,6 +634,13 @@ impl Drop for StateFileGuard {
 }
 
 fn run_worker(target_key: &str) {
+    // Resolved and guarded before anything else, so even the early return below for an
+    // unknown vault key still removes any state file this run inherited
+    let cache_dir = get_workflow_cache_dir();
+    let clean_key = target_key.replace("#", "");
+    let state_path = cache_dir.join(format!("state_{}.json", clean_key));
+    let _guard = StateFileGuard(state_path.clone());
+
     let vault_map = get_vault_map();
     let target_path = match vault_map.get(target_key) {
         Some(p) => expand_tilde(p),
@@ -641,11 +648,6 @@ fn run_worker(target_key: &str) {
     };
     let vault_dir = Path::new(&target_path);
 
-    let cache_dir = get_workflow_cache_dir();
-    let clean_key = target_key.replace("#", "");
-    let state_path = cache_dir.join(format!("state_{}.json", clean_key));
-    // Cleans up state_path no matter how this worker ends, including a panic
-    let _guard = StateFileGuard(state_path.clone());
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
 
     let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
@@ -972,7 +974,9 @@ fn main() {
     }
 
     let cached_data = cached_data_opt.unwrap();
-    let mut results = cached_data.files;
+    // The full cached list, already sorted by modified descending. It is never mutated, so
+    // the fallback search below can resolve a hit in any note, not just filtered ones.
+    let all_files = cached_data.files;
     let tag_recency = cached_data.tag_recency;
     let mut items = Vec::new();
 
@@ -1052,31 +1056,44 @@ fn main() {
         title_string
     };
 
-    let is_duplicate = results
-        .iter()
-        .any(|res| res.title.eq_ignore_ascii_case(&title_string));
+    // Checked against the whole vault, and only when a create item will actually be shown
+    let is_duplicate = allow_create
+        && !is_empty_search
+        && all_files
+            .iter()
+            .any(|res| res.title.eq_ignore_ascii_case(&title_string));
 
-    if !is_create_only && !is_empty_search {
-        results.retain(|res| {
-            let lower_title = res.title.to_lowercase();
-            let matches_title = title_terms.iter().all(|term| lower_title.contains(*term));
-            let matches_tags = tag_terms.iter().all(|term| res.tags.iter().any(|t| t == *term));
-            
-            matches_title && matches_tags
-        });
-    }
+    // Built from `all_files` rather than by narrowing it, so the list below can still be
+    // extended with content and OCR hits for notes the filter dropped
+    let mut results: Vec<FileResult> = if is_create_only {
+        Vec::new()
+    } else if is_empty_search {
+        // Already sorted by modified descending, so the newest notes are the first 50
+        all_files.iter().take(50).cloned().collect()
+    } else {
+        all_files
+            .iter()
+            .filter(|res| {
+                let lower_title = res.title.to_lowercase();
+                let matches_title = title_terms.iter().all(|term| lower_title.contains(*term));
+                let matches_tags = tag_terms.iter().all(|term| res.tags.iter().any(|t| t == *term));
+
+                matches_title && matches_tags
+            })
+            .cloned()
+            .collect()
+    };
 
     // Full-text fallback: when title/tag matches are sparse, grep the note bodies so
     // notes that merely mention the query still surface. Every term has to appear
     // somewhere in the file; terms under two characters are too noisy to search for.
     if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
-        // Snapshot of every cached file keyed by path, taken before `results` is narrowed
-        // so content-search hits can still be resolved back to their cached title, modified
-        // time and tags. Built here rather than up front so a plain hotkey press or tag
-        // autocomplete never pays for cloning the whole file list.
-        let file_lookup: HashMap<String, FileResult> = results
+        // Keyed by borrowed path and holding a borrowed file, so building the lookup costs
+        // no clones at all. It spans the whole vault, which is what lets a content or OCR
+        // hit resolve for a note the title/tag filter dropped.
+        let file_lookup: HashMap<&str, &FileResult> = all_files
             .iter()
-            .map(|res| (res.path.clone(), res.clone()))
+            .map(|res| (res.path.as_str(), res))
             .collect();
 
         // Read the recognized text only here: no other code path needs it, and it is
@@ -1112,7 +1129,25 @@ fn main() {
                     continue;
                 }
 
-                let mut file_result = match file_lookup.get(&content_match.path) {
+                let cached = file_lookup.get(content_match.path.as_str()).copied();
+
+                // A content hit still has to satisfy the tag filter the user typed. A file
+                // with no cache entry has no known tags, so a tag filter excludes it.
+                if !tag_terms.is_empty() {
+                    let matches_tags = cached
+                        .map(|cached_file| {
+                            tag_terms
+                                .iter()
+                                .all(|term| cached_file.tags.iter().any(|t| t == *term))
+                        })
+                        .unwrap_or(false);
+
+                    if !matches_tags {
+                        continue;
+                    }
+                }
+
+                let mut file_result = match cached {
                     Some(cached) => cached.clone(),
                     // A file too new to be in the cache still deserves a row
                     None => {
@@ -1163,15 +1198,27 @@ fn main() {
                 })
                 .unwrap_or("");
 
-            for cached_file in file_lookup.values() {
-                if cached_file.links.iter().any(|l| l.eq_ignore_ascii_case(image_name)) {
-                    if results.iter().any(|res| res.path == cached_file.path) {
-                        continue;
-                    }
-                    let mut file_result = cached_file.clone();
-                    file_result.snippet = Some(format!("🖼️ {}", build_snippet(matching_line)));
-                    results.push(file_result);
+            for &cached_file in file_lookup.values() {
+                if !cached_file.links.iter().any(|l| l.eq_ignore_ascii_case(image_name)) {
+                    continue;
                 }
+
+                // An OCR hit still has to satisfy the tag filter the user typed
+                if !tag_terms.is_empty()
+                    && !tag_terms
+                        .iter()
+                        .all(|term| cached_file.tags.iter().any(|t| t == *term))
+                {
+                    continue;
+                }
+
+                if results.iter().any(|res| res.path == cached_file.path) {
+                    continue;
+                }
+
+                let mut file_result = cached_file.clone();
+                file_result.snippet = Some(format!("🖼️ {}", build_snippet(matching_line)));
+                results.push(file_result);
             }
         }
     }
@@ -1208,13 +1255,17 @@ fn main() {
         }
     };
 
-    results.sort_by(|a, b| {
-        rank_result(a)
-            .cmp(&rank_result(b))
-            .then_with(|| b.modified.cmp(&a.modified))
-    });
+    // Empty searches and create-only mode already hold the newest 50 notes in order and
+    // have no query to rank against, so the sort is skipped entirely for them
+    if !is_empty_search && !is_create_only {
+        results.sort_by(|a, b| {
+            rank_result(a)
+                .cmp(&rank_result(b))
+                .then_with(|| b.modified.cmp(&a.modified))
+        });
 
-    results.truncate(50);
+        results.truncate(50);
+    }
 
     // The vault folder name is used as the root label in result subtitles
     let vault_name = vault_dir
