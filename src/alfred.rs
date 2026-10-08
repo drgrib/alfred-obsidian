@@ -246,12 +246,7 @@ pub fn handle_tag_autocomplete(
 
     matched_tags.sort_by(|a, b| b.1.cmp(a.1));
 
-    let prefix = if all_terms.len() > 1 {
-        let terms_before = &all_terms[..all_terms.len() - 1];
-        format!("{} ", terms_before.join(" "))
-    } else {
-        "".to_string()
-    };
+    let prefix = raw_query.trim_end_matches(|c: char| !c.is_whitespace());
 
     for (tag, modified_time) in matched_tags.into_iter().take(30) {
         let time_ago = format_time_ago(*modified_time);

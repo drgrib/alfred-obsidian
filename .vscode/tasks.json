@@ -4,7 +4,7 @@
 		{
 			"label": "Build Alfred Obsidian",
 			"type": "shell",
-			"command": "cargo build --release --target-dir /tmp/alfred-obsidian-target && cp /tmp/alfred-obsidian-target/release/alfred-obsidian ./alfred-obsidian && rm -rf /tmp/alfred-obsidian-target",
+			"command": "[ -f alfred-obsidian ] && cp -f alfred-obsidian alfred-obsidian-stable; cargo build --release --target-dir /tmp/alfred-obsidian-target && cp -f /tmp/alfred-obsidian-target/release/alfred-obsidian ./alfred-obsidian && rm -rf /tmp/alfred-obsidian-target",
 			"presentation": {
 				"reveal": "always",
 				"panel": "new",
