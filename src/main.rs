@@ -589,8 +589,6 @@ fn parse_note(path: &str, modified: SystemTime) -> FileResult {
     }
 }
 
-/// Recomputes the newest modification time of every tag from scratch, so tags that
-/// disappeared from the vault are dropped instead of lingering in the cache forever.
 /// Builds the row that opens an existing note or creates a new one, with any typed tags
 /// written into the new note's body.
 fn build_create_item(
@@ -670,6 +668,8 @@ fn build_create_item(
     }
 }
 
+/// Recomputes the newest modification time of every tag from scratch, so tags that
+/// disappeared from the vault are dropped instead of lingering in the cache forever.
 fn build_tag_recency(files: &[FileResult]) -> HashMap<String, SystemTime> {
     let mut tag_recency: HashMap<String, SystemTime> = HashMap::new();
     for res in files {
@@ -683,7 +683,6 @@ fn build_tag_recency(files: &[FileResult]) -> HashMap<String, SystemTime> {
     tag_recency
 }
 
-// Helper to format system time for the subtitle
 /// Turns ranked search hits into Alfred rows: title, a subtitle that explains the match,
 /// and the Obsidian Advanced URI that opens the note.
 fn assemble_alfred_items(
@@ -769,6 +768,7 @@ fn assemble_alfred_items(
     items
 }
 
+// Helper to format system time for the subtitle
 fn format_time_ago(time: SystemTime) -> String {
     let now = SystemTime::now();
     if let Ok(duration) = now.duration_since(time) {
@@ -1325,9 +1325,8 @@ fn spawn_worker(target_key: &str) -> bool {
 /// Returns the output to print whenever a worker is live, and `None` when there is no
 /// state file, or when the one found has been abandoned: either its worker pid is gone,
 /// or it carries no pid to probe and has not been touched in `STALE_STATE_SECS`. An
-/// abandoned file is deleted so the next run starts clean. `percentage` is filled in
-/// with the progress the title reports, for callers that want to reuse it.
-fn check_worker_status(state_path: &Path, percentage: &mut f32) -> Option<AlfredOutput> {
+/// abandoned file is deleted so the next run starts clean.
+fn check_worker_status(state_path: &Path) -> Option<AlfredOutput> {
     if state_path.exists() {
         let state_age_secs = fs::metadata(&state_path)
             .and_then(|meta| meta.modified())
@@ -1358,7 +1357,7 @@ fn check_worker_status(state_path: &Path, percentage: &mut f32) -> Option<Alfred
         } else {
             let state = parsed_state.unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None });
 
-            *percentage = if state.total > 0 {
+            let percentage = if state.total > 0 {
                 (state.progress as f32 / state.total as f32) * 100.0
             } else {
                 0.0
@@ -1380,12 +1379,12 @@ fn check_worker_status(state_path: &Path, percentage: &mut f32) -> Option<Alfred
                 Some(eta) => {
                     let remaining = eta.saturating_sub(state_age_secs);
                     if remaining > 0 {
-                        format!("Indexing Vault: {:.0}% ({})", *percentage, format_eta(remaining))
+                        format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(remaining))
                     } else {
-                        format!("Indexing Vault: {:.0}%", *percentage)
+                        format!("Indexing Vault: {:.0}%", percentage)
                     }
                 }
-                None => format!("Indexing Vault: {:.0}%", *percentage),
+                None => format!("Indexing Vault: {:.0}%", percentage),
             };
 
             return Some(AlfredOutput {
@@ -1463,7 +1462,7 @@ fn main() {
     // If an indexer is actively writing, ALWAYS show the progress UI and rerun. The age
     // of the state file only matters when it has no usable pid: normally the recorded
     // worker pid is probed directly, so a slow worker is never mistaken for a dead one.
-    if let Some(output) = check_worker_status(&state_path, &mut 0.0) {
+    if let Some(output) = check_worker_status(&state_path) {
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
     }
