@@ -1,5 +1,6 @@
 **/.DS_Store
 /target
 **/*.rs.bk
-alfred-obsidian
 prefs.plist
+alfred-obsidian
+alfred-obsidian-stable

@@ -18,7 +18,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::ffi::recognize_text;
 use crate::types::*;
@@ -27,12 +27,9 @@ use crate::types::*;
 pub struct OcrOutcome {
     pub path: String,
     /// Extracted text; empty when the file had none, could not be read, or took its
-    /// shard down with it.
+    /// shard down with it (crash or timeout). Callers cannot tell those apart, and do
+    /// not need to: every case is cached as "no text" against the file's mtime.
     pub text: String,
-    /// Wall time the pool spent on this file, including any shard restart it caused.
-    pub secs: f64,
-    /// True when the shard crashed or timed out on this file.
-    pub crashed: bool,
 }
 
 /// How many shards to run. `ocr_workers` in the workflow configuration overrides the
@@ -166,22 +163,20 @@ fn shard_loop(queue: Arc<Mutex<VecDeque<String>>>, results: Sender<OcrOutcome>, 
             }
         }
 
-        let started = Instant::now();
         let response = shard.as_mut().map(|live| live.request(&path, timeout));
-        let (text, crashed) = match response {
-            Some(Some(text)) => (text, false),
+        let text = match response {
+            Some(Some(text)) => text,
             Some(None) => {
                 // Dropping the shard kills and reaps it; the next iteration starts a new one
                 shard = None;
-                (String::new(), true)
+                String::new()
             }
             // Shards cannot be started at all on this machine: isolation is lost, but
             // the index still gets built
-            None => (recognize_text(&path), false),
+            None => recognize_text(&path),
         };
 
-        let outcome = OcrOutcome { path, text, secs: started.elapsed().as_secs_f64(), crashed };
-        if results.send(outcome).is_err() {
+        if results.send(OcrOutcome { path, text }).is_err() {
             break;
         }
     }
