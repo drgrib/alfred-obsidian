@@ -2,6 +2,7 @@ mod types;
 mod ffi;
 mod alfred;
 mod cache;
+mod ocr_pool;
 mod search;
 mod worker;
 
@@ -12,12 +13,19 @@ use std::path::Path;
 
 use crate::alfred::*;
 use crate::cache::*;
+use crate::ocr_pool::run_ocr_shard;
 use crate::search::*;
 use crate::types::*;
 use crate::worker::*;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // A shard needs no configuration at all: it is fed paths over stdin by the pool
+    if args.len() >= 2 && args[1] == "ocr-shard" {
+        run_ocr_shard();
+        return;
+    }
     
     if args.len() >= 3 && args[1] == "worker" {
         run_worker(&args[2]);
@@ -86,7 +94,7 @@ fn main() {
 
     // Cold start: no cache exists at all
     if cached_data_opt.is_none() {
-        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string(), eta_secs: None, worker_pid: None });
+        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: STATUS_SCANNING.to_string(), eta_secs: None, worker_pid: None });
 
         let spawned = spawn_worker(target_key);
 
@@ -123,7 +131,7 @@ fn main() {
                 // Too much work to finish while the user waits: hand it to the worker.
                 // Attachments get their own limit because each image or scanned PDF page
                 // costs a Vision pass.
-                let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None };
+                let state = State { progress: 0, total: dirty_count as u32, status: STATUS_SCANNING.to_string(), eta_secs: None, worker_pid: None };
                 write_json_atomic(&state_path, &state);
 
                 let spawned = spawn_worker(target_key);

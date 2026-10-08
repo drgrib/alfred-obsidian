@@ -667,6 +667,46 @@
 			<key>variable</key>
 			<string>vault_map</string>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<false/>
+				<key>required</key>
+				<false/>
+				<key>text</key>
+				<string>Use Vision's accurate recognizer</string>
+			</dict>
+			<key>description</key>
+			<string>Off by default: the fast recognizer is several times cheaper on CPU and battery and is enough for search recall on most screenshots. Turn on for better results on small or stylized text. Changing this does not re-index existing attachments.</string>
+			<key>label</key>
+			<string>Accurate OCR</string>
+			<key>type</key>
+			<string>checkbox</string>
+			<key>variable</key>
+			<string>ocr_accurate</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>auto</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>Number of parallel OCR processes used while indexing attachments. Leave blank to use one per CPU core (up to 8).</string>
+			<key>label</key>
+			<string>OCR Workers</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>ocr_workers</string>
+		</dict>
 	</array>
 	<key>version</key>
 	<string></string>

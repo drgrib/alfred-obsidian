@@ -28,10 +28,47 @@ pub const DIRTY_IMAGE_THRESHOLD: usize = 1;
 /// when the file carries no usable worker pid; normally liveness is checked directly.
 pub const STALE_STATE_SECS: u64 = 600;
 
-/// Fallback cost of extracting the text from one attachment, used to estimate how long
-/// the remaining attachments will take before any real Vision timings exist. A PDF with
-/// an embedded text layer is far cheaper than this, so the estimate errs high.
+/// Fallback cost of extracting the text from one attachment on a single core, used to
+/// estimate how long the remaining attachments will take before enough real timings
+/// exist. A PDF with an embedded text layer is far cheaper than this, so the estimate
+/// errs high.
 pub const DEFAULT_IMAGE_OCR_SECS: f64 = 1.0;
+
+/// Upper bound on concurrent OCR shard processes. Vision contends for the Neural Engine
+/// and GPU, so throughput stops scaling well before the core count on larger chips.
+pub const MAX_OCR_WORKERS: usize = 8;
+
+/// A shard that has not answered for this long is assumed hung on the current file and
+/// is killed; the file is recorded as having no text and a fresh shard takes over.
+pub const OCR_FILE_TIMEOUT_SECS: u64 = 60;
+
+/// How many consecutive failures to start a shard process are tolerated before a pool
+/// thread gives up on isolation and extracts text in-process instead.
+pub const MAX_SHARD_SPAWN_FAILURES: u32 = 3;
+
+/// The attachment cache is rewritten to disk after this many new results, or after
+/// `CHECKPOINT_SECS` have elapsed since the last write, whichever comes first.
+/// Writing it per file made total I/O quadratic in the number of attachments.
+pub const CHECKPOINT_FILES: usize = 50;
+pub const CHECKPOINT_SECS: f64 = 5.0;
+
+/// Minimum spacing between rewrites of the progress state file. Alfred polls it every
+/// 0.2s, so writing faster than that is wasted work.
+pub const STATE_WRITE_INTERVAL_SECS: f64 = 0.25;
+
+/// Width of the sliding window used to measure indexing throughput for the ETA. A
+/// window reacts to a run of slow scanned PDFs, where a lifetime average would not.
+pub const THROUGHPUT_WINDOW_SECS: f64 = 30.0;
+
+/// Number of completed files needed inside the window before its throughput is trusted
+/// over the default per-file estimate.
+pub const MIN_WINDOW_SAMPLES: usize = 8;
+
+/// Fixed progress status strings. The status never names individual files: the UI only
+/// shows a phase, a percentage, a file count and the time left.
+pub const STATUS_SCANNING: &str = "Scanning vault";
+pub const STATUS_NOTES: &str = "Indexing notes";
+pub const STATUS_ATTACHMENTS: &str = "Indexing attachments";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct FileResult {
@@ -70,6 +107,14 @@ pub struct ContentMatch {
 pub struct VaultCache {
     pub files: Vec<FileResult>,
     pub tag_recency: HashMap<String, SystemTime>,
+}
+
+/// Borrowed view of `VaultCache` with the same JSON shape, so the worker can write a
+/// checkpoint without cloning every note entry first.
+#[derive(Serialize)]
+pub struct VaultCacheRef<'a> {
+    pub files: &'a [FileResult],
+    pub tag_recency: &'a HashMap<String, SystemTime>,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -5,11 +5,14 @@
 
 /// Runs Vision text recognition over one image and returns the recognized text, one
 /// line per observation. Returns an empty string when recognition fails.
-static NSString* ocr_cgimage(CGImageRef cgImage) {
+///
+/// `fast` selects Vision's fast recognizer, which is several times quicker than the
+/// accurate one and good enough for search recall on most screenshots.
+static NSString* ocr_cgimage(CGImageRef cgImage, BOOL fast) {
     if (!cgImage) return @"";
     
     VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
-    request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+    request.recognitionLevel = fast ? VNRequestTextRecognitionLevelFast : VNRequestTextRecognitionLevelAccurate;
     
     VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cgImage options:@{}];
     
@@ -34,9 +37,16 @@ static NSString* ocr_cgimage(CGImageRef cgImage) {
     return result;
 }
 
-const char* perform_ocr(const char* image_path) {
+/// Image pages and raster attachments are downscaled so their long side is at most this
+/// many pixels before recognition. Vision's cost scales with pixel count and text stays
+/// legible at this size, while a full-resolution retina screenshot is both slow and
+/// the usual trigger for ImageIO running out of memory.
+static const CGFloat MAX_OCR_PIXELS = 2000.0;
+
+const char* perform_ocr(const char* image_path, int fast_level) {
     @autoreleasepool {
         @try {
+            BOOL fast = fast_level != 0;
             NSString *path = [NSString stringWithUTF8String:image_path];
             if (!path) return strdup("");
             NSURL *url = [NSURL fileURLWithPath:path];
@@ -78,8 +88,8 @@ const char* perform_ocr(const char* image_path) {
                                     // an oversized page cannot allocate an enormous bitmap
                                     CGFloat scale = 1.5;
                                     CGFloat maxDim = MAX(pageRect.size.width, pageRect.size.height);
-                                    if (maxDim * scale > 2000.0 && maxDim > 0.0) {
-                                        scale = 2000.0 / maxDim;
+                                    if (maxDim * scale > MAX_OCR_PIXELS && maxDim > 0.0) {
+                                        scale = MAX_OCR_PIXELS / maxDim;
                                     }
                                     size_t width = (size_t)(pageRect.size.width * scale);
                                     size_t height = (size_t)(pageRect.size.height * scale);
@@ -106,7 +116,7 @@ const char* perform_ocr(const char* image_path) {
                                             CGContextRelease(ctx);
                                             
                                             if (rendered) {
-                                                NSString *ocrText = ocr_cgimage(rendered);
+                                                NSString *ocrText = ocr_cgimage(rendered, fast);
                                                 if (ocrText.length > 0) {
                                                     [result appendFormat:@"%@\n", ocrText];
                                                 }
@@ -129,13 +139,35 @@ const char* perform_ocr(const char* image_path) {
             CGImageSourceRef imageSource = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
             if (!imageSource) return strdup("");
             
-            CGImageRef cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, NULL);
+            // ImageIO can already tell that some files are not images at all, or are
+            // truncated past recovery; bail before asking it to decode them
+            CGImageSourceStatus status = CGImageSourceGetStatus(imageSource);
+            if (status == kCGImageStatusUnknownType || status == kCGImageStatusInvalidData
+                || CGImageSourceGetCount(imageSource) == 0) {
+                CFRelease(imageSource);
+                return strdup("");
+            }
+            
+            // Decode straight to a downscaled bitmap instead of materializing the full
+            // image: cheaper for Vision, far less memory for oversized screenshots, and
+            // the EXIF orientation is applied so rotated photos read correctly
+            NSDictionary *thumbnailOptions = @{
+                (__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize: @((NSInteger)MAX_OCR_PIXELS),
+            };
+            CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, (__bridge CFDictionaryRef)thumbnailOptions);
+            
+            // A few formats refuse the thumbnail path; fall back to a full decode for them
+            if (!cgImage) {
+                cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, NULL);
+            }
             if (!cgImage) {
                 CFRelease(imageSource);
                 return strdup("");
             }
             
-            NSString *result = ocr_cgimage(cgImage);
+            NSString *result = ocr_cgimage(cgImage, fast);
             
             CGImageRelease(cgImage);
             CFRelease(imageSource);

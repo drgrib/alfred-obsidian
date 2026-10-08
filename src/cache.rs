@@ -6,7 +6,8 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::ffi::{is_supported_image, recognize_text};
+use crate::ffi::is_supported_image;
+use crate::ocr_pool::recognize_text_isolated;
 use crate::types::*;
 
 pub fn expand_tilde(path: &str) -> String {
@@ -382,9 +383,11 @@ pub fn reconcile_inline_cache(
 
     cached_data.files.sort_by(|a, b| b.modified.cmp(&a.modified));
 
+    // Even the single inline attachment is read in a disposable shard process: a PNG
+    // that crashes ImageIO or Vision must not take the Alfred script filter down with it
     for path in &scan.dirty_images {
         let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
-        let text = recognize_text(path);
+        let text = recognize_text_isolated(path);
         ocr_cache.insert(path.clone(), OcrResult { modified, text });
     }
 
