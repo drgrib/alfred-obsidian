@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
 
+use crate::obsidian::VaultTarget;
 use crate::types::{AlfredOutput, FileResult};
 
 pub fn url_encode(input: &str) -> String {
@@ -25,10 +26,11 @@ pub fn url_encode(input: &str) -> String {
 pub fn build_create_item(
     title_string: &str,
     tag_terms: &[&str],
-    vault_name: &str,
+    target: &VaultTarget,
     is_duplicate: bool,
     has_multiple_vaults: bool,
 ) -> Item {
+    let vault_name = target.label.as_str();
     let tag_string = tag_terms
         .iter()
         .map(|t| format!("#{}", t))
@@ -39,8 +41,8 @@ pub fn build_create_item(
         // Open the existing note as-is; omit mode=new and data so tags are never appended
         let open_uri = format!(
             "obsidian://advanced-uri?vault={}&filepath={}|{}",
-            url_encode(vault_name),
-            url_encode(title_string),
+            url_encode(&target.uri_vault),
+            url_encode(&target.filepath(title_string)),
             title_string
         );
 
@@ -86,8 +88,8 @@ pub fn build_create_item(
 
         let create_uri = format!(
             "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}|{}",
-            url_encode(vault_name),
-            url_encode(title_string),
+            url_encode(&target.uri_vault),
+            url_encode(&target.filepath(title_string)),
             url_encode(&body_string),
             title_string
         );
@@ -104,10 +106,11 @@ pub fn build_create_item(
 pub fn assemble_alfred_items(
     results: &[FileResult],
     vault_dir: &Path,
-    vault_name: &str,
+    target: &VaultTarget,
     title_terms: &[&str],
     has_multiple_vaults: bool,
 ) -> Vec<Item> {
+    let vault_name = target.label.as_str();
     let mut items = Vec::new();
 
     for res in results.iter().take(50) {
@@ -172,8 +175,8 @@ pub fn assemble_alfred_items(
             .set_subtitle(subtitle)
             .set_arg(format!(
                 "obsidian://advanced-uri?vault={}&filepath={}|{}",
-                url_encode(vault_name),
-                url_encode(&arg_path),
+                url_encode(&target.uri_vault),
+                url_encode(&target.filepath(&arg_path)),
                 res.title
             ))
             .set_valid(true);

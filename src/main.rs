@@ -2,6 +2,7 @@ mod types;
 mod ffi;
 mod alfred;
 mod cache;
+mod obsidian;
 mod ocr_pool;
 mod search;
 mod worker;
@@ -13,6 +14,7 @@ use std::path::Path;
 
 use crate::alfred::*;
 use crate::cache::*;
+use crate::obsidian::{is_exact_route_key, resolve_vault_target, route_key};
 use crate::ocr_pool::run_ocr_shard;
 use crate::search::*;
 use crate::types::*;
@@ -53,11 +55,15 @@ fn main() {
     let lower_query = query.to_lowercase();
     let all_terms: Vec<&str> = lower_query.split_whitespace().collect();
 
+    // The first tag that names a vault (exactly, or as the parent of a nested tag such
+    // as `#corp/project`) decides where the search and any new note go
     let mut target_key = "default";
     for term in &all_terms {
-        if term.starts_with('#') && vault_map.contains_key(*term) {
-            target_key = term;
-            break;
+        if term.starts_with('#') {
+            if let Some(key) = route_key(term, &vault_map) {
+                target_key = key;
+                break;
+            }
         }
     }
 
@@ -180,8 +186,10 @@ fn main() {
         .copied()
         .collect();
         
+    // An exact routing key only selects the vault; a nested child of one is kept as a
+    // real tag because it says more than which vault to use
     let tag_terms: Vec<&str> = all_terms.iter()
-        .filter(|t| t.starts_with('#') && !vault_map.contains_key(**t))
+        .filter(|t| t.starts_with('#') && !is_exact_route_key(t, &vault_map))
         .map(|t| t.trim_start_matches('#'))
         .collect();
 
@@ -289,23 +297,26 @@ fn main() {
         results.truncate(50);
     }
 
-    // The vault folder name is used as the root label in result subtitles
-    let vault_name = vault_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&clean_key)
-        .to_string();
+    // Addressed by Obsidian's own vault ID when the directory is registered, so a
+    // routed note cannot silently land in whichever vault happens to be active
+    let mut target = resolve_vault_target(vault_dir);
+    if target.label.is_empty() {
+        target.label = clean_key.clone();
+    }
+    if target.uri_vault.is_empty() {
+        target.uri_vault = clean_key.clone();
+    }
 
     // The vault name only adds useful context when more than one vault is configured
     let has_multiple_vaults = vault_map.len() > 1;
 
     if !is_create_only {
-        items.extend(assemble_alfred_items(&results, vault_dir, &vault_name, &title_terms, has_multiple_vaults));
+        items.extend(assemble_alfred_items(&results, vault_dir, &target, &title_terms, has_multiple_vaults));
     }
 
     // Offer to open the existing note, or create a new one with the tags written into the body
     if allow_create && !is_empty_search {
-        let create_item = build_create_item(&title_string, &tag_terms, &vault_name, is_duplicate, has_multiple_vaults);
+        let create_item = build_create_item(&title_string, &tag_terms, &target, is_duplicate, has_multiple_vaults);
 
         if !is_create_only && items.len() >= 2 {
             items.insert(2, create_item);
