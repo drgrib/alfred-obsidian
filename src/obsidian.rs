@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Everything needed to build URIs for, and label, one configured vault entry.
+#[derive(Clone)]
 pub struct VaultTarget {
     /// Value for the URI's `vault=` parameter: the registry ID when the directory is
     /// known to Obsidian, otherwise the folder name.

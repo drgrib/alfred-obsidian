@@ -130,6 +130,12 @@ pub struct State {
     /// worker is still alive instead of guessing from the file's age.
     #[serde(default)]
     pub worker_pid: Option<u32>,
+    /// Vaults being indexed by the worker that owns this file. A single worker indexes
+    /// every vault that needs it as one batch with one combined total, and writes this
+    /// same state to each of their state files, so the progress bar never finishes for
+    /// one vault only to start over for the next.
+    #[serde(default)]
+    pub vaults: Vec<String>,
 }
 
 /// What a single walk of the vault found, compared against the two caches.

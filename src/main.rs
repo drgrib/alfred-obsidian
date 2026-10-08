@@ -11,14 +11,28 @@ use alfred_workflow_rs::Item;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::time::SystemTime;
 
 use crate::alfred::*;
 use crate::cache::*;
-use crate::obsidian::{is_exact_route_key, resolve_vault_target, route_key};
+use crate::obsidian::{is_exact_route_key, resolve_vault_target, route_key, VaultTarget};
 use crate::ocr_pool::run_ocr_shard;
 use crate::search::*;
 use crate::types::*;
 use crate::worker::*;
+
+/// Resolves the URI target for a vault directory, falling back to the configured key
+/// for both the label and the `vault=` parameter when Obsidian has not registered it.
+fn vault_target_for(vault_dir: &Path, clean_key: &str) -> VaultTarget {
+    let mut target = resolve_vault_target(vault_dir);
+    if target.label.is_empty() {
+        target.label = clean_key.to_string();
+    }
+    if target.uri_vault.is_empty() {
+        target.uri_vault = clean_key.to_string();
+    }
+    target
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -29,8 +43,9 @@ fn main() {
         return;
     }
     
+    // Every argument after "worker" is a vault key; they are indexed as one batch
     if args.len() >= 3 && args[1] == "worker" {
-        run_worker(&args[2]);
+        run_worker(&args[2..]);
         return;
     }
 
@@ -84,13 +99,28 @@ fn main() {
 
     let cache_dir = get_workflow_cache_dir();
     let clean_key = target_key.replace("#", "");
-    let state_path = cache_dir.join(format!("state_{}.json", clean_key));
+    let state_path = state_path_for(&cache_dir, target_key);
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
     let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
+
+    // Other vaults in a fixed order, so the batch is assembled the same way every time
+    let mut other_keys: Vec<&String> = vault_map.keys().filter(|key| key.as_str() != target_key).collect();
+    other_keys.sort();
 
     if let Some(output) = check_worker_status(&state_path) {
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
+    }
+
+    // On the empty query a worker for any vault owns the UI. Every state file in a batch
+    // carries the same combined progress, so whichever one is found first is the one.
+    if query.is_empty() {
+        for key in &other_keys {
+            if let Some(output) = check_worker_status(&state_path_for(&cache_dir, key)) {
+                println!("{}", serde_json::to_string(&output).unwrap());
+                return;
+            }
+        }
     }
 
     let mut cached_data_opt = None;
@@ -98,83 +128,97 @@ fn main() {
         cached_data_opt = load_cache(&cache_path);
     }
 
-    // Cold start: no cache exists at all
-    if cached_data_opt.is_none() {
-        write_json_atomic(&state_path, &State { progress: 0, total: 0, status: STATUS_SCANNING.to_string(), eta_secs: None, worker_pid: None });
+    if query.is_empty() {
+        // Empty query: reconcile the caches with the vault so the list is never stale.
+        // A typed query never pays for the directory walk, it just searches what is cached.
+        //
+        // Every configured vault is planned here, not just the one being displayed. A
+        // query that routes to a non-default vault always carries its `#key`, so it is
+        // never empty, and this is the only point where that vault's cache would be
+        // brought up to date. A user who moves notes between vaults should not have to
+        // know to type the key. Everything that needs the worker goes into one batch with
+        // one combined total, so the countdown the user watches ends when all of it is done.
+        let mut pending: Vec<(String, usize)> = Vec::new();
 
-        let spawned = spawn_worker(target_key);
+        let mut ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
+            .unwrap_or_default();
 
-        // A worker that never started would leave the UI pinned to a progress bar
-        if !spawned {
-            fs::remove_file(&state_path).ok();
+        match cached_data_opt.as_mut() {
+            None => {
+                // Cold start: the walk against an empty cache counts every file, so the
+                // batch total is right from the first frame
+                let scan = scan_vault(vault_dir, &[], &OcrCache::default());
+                pending.push((target_key.to_string(), scan.dirty_notes.len() + scan.dirty_images.len()));
+            }
+            Some(cached_data) => {
+                let scan = scan_vault(vault_dir, &cached_data.files, &ocr_cache);
+                let dirty_count = scan.dirty_notes.len() + scan.dirty_images.len();
+
+                if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
+                    // Too much work to finish while the user waits: hand it to the worker.
+                    // Attachments get their own limit because each image or scanned PDF
+                    // page costs a Vision pass.
+                    pending.push((target_key.to_string(), dirty_count));
+                } else if dirty_count > 0 || scan.has_deleted {
+                    reconcile_inline_cache(vault_dir, cached_data, &mut ocr_cache, &scan, &cache_path, &ocr_cache_path);
+                }
+            }
         }
 
-        let output = AlfredOutput {
-            rerun: Some(0.2),
-            items: vec![
-                Item::new("Indexing Vault: 0%")
-                    .set_subtitle("Initializing background worker. Please wait...")
-                    .set_valid(false)
-            ]
-        };
-        println!("{}", serde_json::to_string(&output).unwrap());
-        return;
-    }
+        for key in &other_keys {
+            if let Some(count) = plan_vault_refresh(key, &vault_map[*key], &cache_dir) {
+                pending.push(((*key).clone(), count));
+            }
+        }
 
-    // Empty query: reconcile the caches with the vault so the list is never stale.
-    // A typed query never pays for the directory walk, it just searches what is cached.
-    if query.is_empty() {
-        if let Some(mut cached_data) = cached_data_opt.take() {
-            let mut ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
-                .ok()
-                .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
-                .unwrap_or_default();
-
-            let scan = scan_vault(vault_dir, &cached_data.files, &ocr_cache);
-            let dirty_count = scan.dirty_notes.len() + scan.dirty_images.len();
-
-            if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
-                // Too much work to finish while the user waits: hand it to the worker.
-                // Attachments get their own limit because each image or scanned PDF page
-                // costs a Vision pass.
-                let state = State { progress: 0, total: dirty_count as u32, status: STATUS_SCANNING.to_string(), eta_secs: None, worker_pid: None };
-                write_json_atomic(&state_path, &state);
-
-                let spawned = spawn_worker(target_key);
-
-                // A worker that never started would leave the UI pinned to a progress bar
-                if !spawned {
-                    fs::remove_file(&state_path).ok();
-                }
-
-                let output = AlfredOutput {
-                    rerun: Some(0.2),
-                    items: vec![
-                        Item::new("Indexing Vault: 0%")
-                            .set_subtitle("Updating index in background. Please wait...")
-                            .set_valid(false)
-                    ]
-                };
+        if !pending.is_empty() {
+            if let Some(output) = start_worker_with_feedback(&pending, &cache_dir) {
                 println!("{}", serde_json::to_string(&output).unwrap());
                 return;
             }
-
-            if dirty_count > 0 || scan.has_deleted {
-                reconcile_inline_cache(vault_dir, &mut cached_data, &mut ocr_cache, &scan, &cache_path, &ocr_cache_path);
-            }
-
-            cached_data_opt = Some(cached_data);
         }
+    } else if cached_data_opt.is_none() {
+        // Cold start reached through a typed query: index just this vault now rather
+        // than waiting for the next empty query to batch it
+        if let Some(output) = start_worker_with_feedback(&[(target_key.to_string(), 0)], &cache_dir) {
+            println!("{}", serde_json::to_string(&output).unwrap());
+            return;
+        }
+    }
+
+    // Only reachable with no cache if the worker could not be spawned; there is nothing
+    // to search in that case, so the failure is reported rather than panicking
+    if cached_data_opt.is_none() {
+        let output = AlfredOutput {
+            rerun: None,
+            items: vec![Item::new("Could not start indexer")
+                .set_subtitle(format!("The background worker for the {} vault failed to launch", clean_key))
+                .set_valid(false)],
+        };
+        println!("{}", serde_json::to_string(&output).unwrap());
+        return;
     }
 
     let cached_data = cached_data_opt.unwrap();
     // The full cached list, already sorted by modified descending. It is never mutated, so
     // the fallback search below can resolve a hit in any note, not just filtered ones.
     let all_files = cached_data.files;
-    let tag_recency = cached_data.tag_recency;
+    let mut tag_recency = cached_data.tag_recency;
     let mut items = Vec::new();
 
     // Tag Autocomplete Mode
+    //
+    // A half-typed routing key (`#corp-g`) still routes to the default vault, whose cache
+    // legitimately has no `corp-google` notes once they live in their own vault. The keys
+    // are offered regardless so the vault is always reachable through autocomplete; a key
+    // the current vault actually uses as a tag keeps its real recency.
+    for key in vault_map.keys().filter(|key| key.starts_with('#')) {
+        tag_recency
+            .entry(key.trim_start_matches('#').to_lowercase())
+            .or_insert(SystemTime::now());
+    }
     if let Some(output) = handle_tag_autocomplete(raw_query, &all_terms, &tag_recency) {
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
@@ -299,19 +343,52 @@ fn main() {
 
     // Addressed by Obsidian's own vault ID when the directory is registered, so a
     // routed note cannot silently land in whichever vault happens to be active
-    let mut target = resolve_vault_target(vault_dir);
-    if target.label.is_empty() {
-        target.label = clean_key.clone();
-    }
-    if target.uri_vault.is_empty() {
-        target.uri_vault = clean_key.clone();
-    }
+    let target = vault_target_for(vault_dir, &clean_key);
 
     // The vault name only adds useful context when more than one vault is configured
     let has_multiple_vaults = vault_map.len() > 1;
 
     if !is_create_only {
-        items.extend(assemble_alfred_items(&results, vault_dir, &target, &title_terms, has_multiple_vaults));
+        if query.is_empty() && has_multiple_vaults {
+            // The empty query is the one view that spans vaults: the newest notes from
+            // every configured vault, merged by modification time. Each row is built
+            // against its own vault so the location label and the Advanced URI are right.
+            // A vault with no cache yet is skipped; it is already in the indexing batch.
+            let mut vaults: Vec<(std::path::PathBuf, VaultTarget, Vec<FileResult>)> = Vec::new();
+            vaults.push((vault_dir.to_path_buf(), target.clone(), results));
+            for key in &other_keys {
+                let other_dir = std::path::PathBuf::from(expand_tilde(&vault_map[*key]));
+                let other_clean = key.replace("#", "");
+                let other_cache = cache_dir.join(format!("vault_cache_{}.json", other_clean));
+                if let Some(cache) = load_cache(&other_cache) {
+                    let newest: Vec<FileResult> = cache.files.into_iter().take(50).collect();
+                    vaults.push((other_dir.clone(), vault_target_for(&other_dir, &other_clean), newest));
+                }
+            }
+
+            // (modified, vault index, position within that vault's list)
+            let mut order: Vec<(SystemTime, usize, usize)> = Vec::new();
+            for (vault_index, (_, _, files)) in vaults.iter().enumerate() {
+                for (position, res) in files.iter().enumerate() {
+                    order.push((res.modified, vault_index, position));
+                }
+            }
+            order.sort_by(|a, b| b.0.cmp(&a.0));
+            order.truncate(50);
+
+            for (_, vault_index, position) in order {
+                let (dir, vault_target, files) = &vaults[vault_index];
+                items.extend(assemble_alfred_items(
+                    std::slice::from_ref(&files[position]),
+                    dir,
+                    vault_target,
+                    &title_terms,
+                    has_multiple_vaults,
+                ));
+            }
+        } else {
+            items.extend(assemble_alfred_items(&results, vault_dir, &target, &title_terms, has_multiple_vaults));
+        }
     }
 
     // Offer to open the existing note, or create a new one with the tags written into the body
@@ -333,9 +410,10 @@ fn main() {
                     .set_valid(false)
             );
         } else if is_empty_search {
+            let scope = if query.is_empty() && has_multiple_vaults { "any vault".to_string() } else { format!("{} vault", target_key) };
             items.push(
                 Item::new("No matches found")
-                    .set_subtitle(format!("No markdown files found in {} vault", target_key))
+                    .set_subtitle(format!("No markdown files found in {}", scope))
                     .set_valid(false)
             );
         } else {
