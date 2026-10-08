@@ -591,6 +591,85 @@ fn parse_note(path: &str, modified: SystemTime) -> FileResult {
 
 /// Recomputes the newest modification time of every tag from scratch, so tags that
 /// disappeared from the vault are dropped instead of lingering in the cache forever.
+/// Builds the row that opens an existing note or creates a new one, with any typed tags
+/// written into the new note's body.
+fn build_create_item(
+    title_string: &str,
+    tag_terms: &[&str],
+    vault_name: &str,
+    is_duplicate: bool,
+    has_multiple_vaults: bool,
+) -> Item {
+    let tag_string = tag_terms
+        .iter()
+        .map(|t| format!("#{}", t))
+        .collect::<Vec<String>>()
+        .join(" ");
+
+    if is_duplicate {
+        // Open the existing note as-is; omit mode=new and data so tags are never appended
+        let open_uri = format!(
+            "obsidian://advanced-uri?vault={}&filepath={}|{}",
+            url_encode(vault_name),
+            url_encode(title_string),
+            title_string
+        );
+
+        Item::new(format!("Open existing \"{}\"", title_string))
+            .set_subtitle("Note already exists")
+            .set_arg(open_uri)
+            .set_valid(true)
+    } else {
+        // A slash in the typed title means the note lands in a subdirectory of the vault.
+        // The title shows only the note name; the directory is shown in the subtitle.
+        let new_note_path = Path::new(title_string);
+        let file_name_str = new_note_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(title_string)
+            .to_string();
+        let parent_str = match new_note_path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().into_owned(),
+            _ => String::new(),
+        };
+
+        let create_location = if !parent_str.is_empty() {
+            format!("{}/{}", vault_name, parent_str)
+        } else if has_multiple_vaults {
+            vault_name.to_string()
+        } else {
+            String::new()
+        };
+
+        let create_subtitle = if tag_string.is_empty() {
+            create_location
+        } else if create_location.is_empty() {
+            tag_string.clone()
+        } else {
+            format!("{} | {}", create_location, tag_string)
+        };
+
+        let body_string = if tag_string.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{}", tag_string)
+        };
+
+        let create_uri = format!(
+            "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}|{}",
+            url_encode(vault_name),
+            url_encode(title_string),
+            url_encode(&body_string),
+            title_string
+        );
+
+        Item::new(format!("Create \"{}\"", file_name_str))
+            .set_subtitle(create_subtitle)
+            .set_arg(create_uri)
+            .set_valid(true)
+    }
+}
+
 fn build_tag_recency(files: &[FileResult]) -> HashMap<String, SystemTime> {
     let mut tag_recency: HashMap<String, SystemTime> = HashMap::new();
     for res in files {
@@ -605,6 +684,91 @@ fn build_tag_recency(files: &[FileResult]) -> HashMap<String, SystemTime> {
 }
 
 // Helper to format system time for the subtitle
+/// Turns ranked search hits into Alfred rows: title, a subtitle that explains the match,
+/// and the Obsidian Advanced URI that opens the note.
+fn assemble_alfred_items(
+    results: &[FileResult],
+    vault_dir: &Path,
+    vault_name: &str,
+    title_terms: &[&str],
+    has_multiple_vaults: bool,
+) -> Vec<Item> {
+    let mut items = Vec::new();
+
+    for res in results.iter().take(50) {
+        // Show the note's location relative to the vault, without the filename
+        let note_path = Path::new(&res.path);
+        let location = match note_path.strip_prefix(vault_dir) {
+            Ok(relative) => match relative.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => {
+                    if has_multiple_vaults {
+                        format!("{}/{}", vault_name, parent.to_string_lossy())
+                    } else {
+                        parent.to_string_lossy().into_owned()
+                    }
+                }
+                _ => {
+                    if has_multiple_vaults {
+                        vault_name.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+            },
+            Err(_) => {
+                if has_multiple_vaults {
+                    vault_name.to_string()
+                } else {
+                    String::new()
+                }
+            }
+        };
+
+        // When the title itself explains the match, the note's tags are more
+        // useful than the matched line; otherwise the snippet explains the hit
+        let lower_title = res.title.to_lowercase();
+        let title_matches_all_terms =
+            !title_terms.is_empty() && title_terms.iter().all(|term| lower_title.contains(term));
+
+        let subtitle = if !title_matches_all_terms && res.snippet.is_some() {
+            let snippet = res.snippet.as_ref().unwrap();
+            if location.is_empty() {
+                snippet.clone()
+            } else {
+                format!("{} | {}", location, snippet)
+            }
+        } else if res.tags.is_empty() {
+            location
+        } else if location.is_empty() {
+            format!("#{}", res.tags.join(" #"))
+        } else {
+            format!("{} | #{}", location, res.tags.join(" #"))
+        };
+
+        // Obsidian Advanced URI expects the note path relative to the vault root, without the .md extension
+        let arg_path = note_path
+            .strip_prefix(vault_dir)
+            .unwrap_or(note_path)
+            .to_string_lossy()
+            .trim_end_matches(".md")
+            .to_string();
+
+        let item = Item::new(res.title.clone())
+            .set_subtitle(subtitle)
+            .set_arg(format!(
+                "obsidian://advanced-uri?vault={}&filepath={}|{}",
+                url_encode(vault_name),
+                url_encode(&arg_path),
+                res.title
+            ))
+            .set_valid(true);
+
+        items.push(item);
+    }
+
+    items
+}
+
 fn format_time_ago(time: SystemTime) -> String {
     let now = SystemTime::now();
     if let Ok(duration) = now.duration_since(time) {
@@ -620,6 +784,165 @@ fn format_time_ago(time: SystemTime) -> String {
         }
     } else {
         "Unknown".to_string()
+    }
+}
+
+/// Widens a sparse result set by grepping note bodies and extracted attachment text.
+///
+/// `results` is extended in place, so the title and tag hits the caller already collected
+/// keep their place and nothing is listed twice. Every term has to appear somewhere in
+/// the file; terms under two characters are too noisy to search for.
+fn execute_fallback_search(
+    vault_dir: &Path,
+    title_terms: &[&str],
+    tag_terms: &[&str],
+    all_files: &[FileResult],
+    results: &mut Vec<FileResult>,
+    ocr_cache_path: &Path,
+) {
+    if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
+        // Keyed by borrowed path and holding a borrowed file, so building the lookup costs
+        // no clones at all. It spans the whole vault, which is what lets a content or
+        // attachment hit resolve for a note the title/tag filter dropped.
+        let file_lookup: HashMap<&str, &FileResult> = all_files
+            .iter()
+            .map(|res| (res.path.as_str(), res))
+            .collect();
+
+        // Read the extracted attachment text only here: no other code path needs it, and
+        // it is the largest file in the cache directory
+        let ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
+            .unwrap_or_default();
+
+        let matchers = build_term_matchers(title_terms);
+
+        // Every term must have compiled, otherwise the search would silently
+        // ignore part of what the user typed
+        if matchers.len() == title_terms.len() {
+            let content_matches: Arc<Mutex<Vec<ContentMatch>>> = Arc::new(Mutex::new(Vec::new()));
+            let mut visitor_builder = ContentVisitorBuilder {
+                matchers,
+                matches: Arc::clone(&content_matches),
+            };
+
+            WalkBuilder::new(vault_dir)
+                .build_parallel()
+                .visit(&mut visitor_builder);
+
+            let found: Vec<ContentMatch> = match content_matches.lock() {
+                Ok(mut guard) => std::mem::take(&mut *guard),
+                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+            };
+
+            for content_match in found {
+                // Never list a note twice: title/tag hits keep their original entry
+                if results.iter().any(|res| res.path == content_match.path) {
+                    continue;
+                }
+
+                let cached = file_lookup.get(content_match.path.as_str()).copied();
+
+                // A content hit still has to satisfy the tag filter the user typed. A file
+                // with no cache entry has no known tags, so a tag filter excludes it.
+                if !tag_terms.is_empty() {
+                    let matches_tags = cached
+                        .map(|cached_file| {
+                            tag_terms
+                                .iter()
+                                .all(|term| cached_file.tags.iter().any(|t| t == *term))
+                        })
+                        .unwrap_or(false);
+
+                    if !matches_tags {
+                        continue;
+                    }
+                }
+
+                let mut file_result = match cached {
+                    Some(cached) => cached.clone(),
+                    // A file too new to be in the cache still deserves a row
+                    None => {
+                        let path = Path::new(&content_match.path);
+                        FileResult {
+                            title: path
+                                .file_stem()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&content_match.path)
+                                .to_string(),
+                            path: content_match.path.clone(),
+                            modified: fs::metadata(path)
+                                .and_then(|m| m.modified())
+                                .unwrap_or(SystemTime::UNIX_EPOCH),
+                            tags: Vec::new(),
+                            links: Vec::new(),
+                            snippet: None,
+                        }
+                    }
+                };
+
+                file_result.snippet = Some(content_match.snippet);
+                results.push(file_result);
+            }
+        }
+
+        // An attachment is never shown on its own: only the Markdown note that embeds it
+        // becomes an item, so Alfred always opens something editable. This covers image
+        // embeds and PDF attachments alike, since both are indexed the same way.
+        for (image_path, ocr_result) in &ocr_cache {
+            let lower_text = ocr_result.text.to_lowercase();
+            if !title_terms.iter().all(|term| lower_text.contains(*term)) {
+                continue;
+            }
+
+            let image_name = Path::new(image_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(image_path);
+
+            // Find the first line that actually contains one of the query terms to show as the snippet
+            let matching_line = ocr_result
+                .text
+                .lines()
+                .map(|l| l.trim())
+                .find(|l| {
+                    let lower_line = l.to_lowercase();
+                    title_terms.iter().any(|term| lower_line.contains(term))
+                })
+                .unwrap_or("");
+
+            for &cached_file in file_lookup.values() {
+                if !cached_file.links.iter().any(|l| l.eq_ignore_ascii_case(image_name)) {
+                    continue;
+                }
+
+                // An OCR hit still has to satisfy the tag filter the user typed
+                if !tag_terms.is_empty()
+                    && !tag_terms
+                        .iter()
+                        .all(|term| cached_file.tags.iter().any(|t| t == *term))
+                {
+                    continue;
+                }
+
+                if results.iter().any(|res| res.path == cached_file.path) {
+                    continue;
+                }
+
+                // A PDF reads as a document, anything else as an image
+                let is_pdf = Path::new(image_path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false);
+                let icon = if is_pdf { "📄" } else { "🖼️" };
+
+                let mut file_result = cached_file.clone();
+                file_result.snippet = Some(format!("{} {}", icon, build_snippet(matching_line)));
+                results.push(file_result);
+            }
+        }
     }
 }
 
@@ -864,6 +1187,221 @@ fn run_worker(target_key: &str) {
     // state_path is removed by the guard here, whichever way the worker ended
 }
 
+/// Brings the two in-memory caches in line with a fresh `scan` of the vault, then writes
+/// them back to disk atomically.
+///
+/// Only what the scan marked dirty is re-read: unchanged notes keep their cached entry,
+/// entries whose files vanished are dropped, and the tag recency map is rebuilt from the
+/// surviving files so tags that disappeared do not linger in the cache forever.
+fn reconcile_inline_cache(
+    vault_dir: &Path,
+    cached_data: &mut VaultCache,
+    ocr_cache: &mut OcrCache,
+    scan: &VaultScan,
+    cache_path: &Path,
+    ocr_cache_path: &Path,
+) {
+    // The scan already carries every absolute path this reconciliation works with, so
+    // the vault directory itself is not needed here; it stays in the signature for the
+    // Phase 2 module split.
+    let _ = vault_dir;
+
+    // Small enough to fix inline: mutate the loaded caches in place so unchanged
+    // entries are never cloned or rebuilt from scratch
+    cached_data.files.retain(|res| scan.notes.contains_key(&res.path));
+    ocr_cache.retain(|path, _| scan.images.contains_key(path));
+
+    // Map surviving paths to their slot so a dirty note overwrites its own
+    // entry instead of being appended a second time
+    let mut slot_by_path: HashMap<String, usize> = HashMap::with_capacity(cached_data.files.len());
+    for (index, res) in cached_data.files.iter().enumerate() {
+        slot_by_path.insert(res.path.clone(), index);
+    }
+
+    for path in &scan.dirty_notes {
+        let modified = scan.notes.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
+        let parsed = parse_note(path, modified);
+
+        match slot_by_path.get(path).copied() {
+            Some(index) => cached_data.files[index] = parsed,
+            None => {
+                slot_by_path.insert(path.clone(), cached_data.files.len());
+                cached_data.files.push(parsed);
+            }
+        }
+    }
+
+    cached_data.files.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+    for path in &scan.dirty_images {
+        let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
+        let text = recognize_text(path);
+        ocr_cache.insert(path.clone(), OcrResult { modified, text });
+    }
+
+    cached_data.tag_recency = build_tag_recency(&cached_data.files);
+
+    write_json_atomic(cache_path, cached_data);
+    // The attachment cache is only rewritten when attachments changed or dropped
+    if !scan.dirty_images.is_empty() || scan.has_deleted {
+        write_json_atomic(ocr_cache_path, ocr_cache);
+    }
+}
+
+/// Builds the tag suggestion list while the user is typing a `#tag`.
+///
+/// Returns `None` the moment the cursor is not sitting on a partial tag, so the caller
+/// falls through to the normal search path instead of showing suggestions.
+fn handle_tag_autocomplete(
+    raw_query: &str,
+    all_terms: &[&str],
+    tag_recency: &HashMap<String, SystemTime>,
+) -> Option<AlfredOutput> {
+    let ends_with_space = raw_query.ends_with(' ');
+    let last_term = all_terms.last().copied().unwrap_or("");
+    let is_autocompleting_tag = !ends_with_space && last_term.starts_with('#');
+
+    if !is_autocompleting_tag {
+        return None;
+    }
+
+    let mut items = Vec::new();
+
+    // Tag Autocomplete Mode
+    let partial_tag = last_term.trim_start_matches('#');
+
+    let mut matched_tags: Vec<(&String, &SystemTime)> = tag_recency.iter()
+        .filter(|(t, _)| t.contains(partial_tag))
+        .collect();
+
+    matched_tags.sort_by(|a, b| b.1.cmp(a.1));
+
+    let prefix = if all_terms.len() > 1 {
+        let terms_before = &all_terms[..all_terms.len() - 1];
+        format!("{} ", terms_before.join(" "))
+    } else {
+        "".to_string()
+    };
+
+    for (tag, modified_time) in matched_tags.into_iter().take(30) {
+        let time_ago = format_time_ago(*modified_time);
+        items.push(
+            Item::new(format!("#{}", tag))
+                .set_subtitle(format!("{}", time_ago))
+                .set_autocomplete(format!("{}#{} ", prefix, tag))
+                .set_valid(false)
+        );
+    }
+
+    if items.is_empty() {
+        items.push(Item::new("No matching tags").set_valid(false));
+    }
+
+    Some(AlfredOutput { rerun: None, items })
+}
+
+/// Re-runs this binary as a detached background indexer for one vault.
+///
+/// Returns false when the spawn failed, so the caller can delete the state file it just
+/// wrote instead of leaving Alfred pinned to a progress bar that never advances.
+fn spawn_worker(target_key: &str) -> bool {
+    match env::current_exe() {
+        Ok(exe) => Command::new(exe)
+            .arg("worker")
+            .arg(target_key)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // Own process group, so closing Alfred cannot signal the worker
+            .process_group(0)
+            .spawn()
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Shows the indexing progress UI while a worker owns `state_path`.
+///
+/// Returns the output to print whenever a worker is live, and `None` when there is no
+/// state file, or when the one found has been abandoned: either its worker pid is gone,
+/// or it carries no pid to probe and has not been touched in `STALE_STATE_SECS`. An
+/// abandoned file is deleted so the next run starts clean. `percentage` is filled in
+/// with the progress the title reports, for callers that want to reuse it.
+fn check_worker_status(state_path: &Path, percentage: &mut f32) -> Option<AlfredOutput> {
+    if state_path.exists() {
+        let state_age_secs = fs::metadata(&state_path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+
+        let parsed_state: Option<State> = fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|data| serde_json::from_str::<State>(&data).ok());
+
+        // Signal 0 checks existence only; it succeeds while the worker is running
+        let worker_pid = parsed_state.as_ref().and_then(|state| state.worker_pid);
+        let worker_alive = match worker_pid {
+            Some(pid) => unsafe { kill(pid as i32, 0) == 0 },
+            None => false,
+        };
+
+        let is_stale = match worker_pid {
+            Some(_) => !worker_alive,
+            // No pid to probe (state file from an older build, or unreadable)
+            None => state_age_secs > STALE_STATE_SECS,
+        };
+
+        if is_stale {
+            fs::remove_file(&state_path).ok();
+        } else {
+            let state = parsed_state.unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None });
+
+            *percentage = if state.total > 0 {
+                (state.progress as f32 / state.total as f32) * 100.0
+            } else {
+                0.0
+            };
+
+            // With no total yet the status alone explains what is happening, which is
+            // what the cold-start and pre-scan states look like
+            let subtitle = if state.total > 0 {
+                format!("{} ({} of {} files processed). Please wait...", state.status, state.progress, state.total)
+            } else {
+                format!("{} Please wait...", state.status)
+            };
+
+            // The worker rewrites its own ETA as it goes; counting the state file's age off
+            // it keeps the number ticking while one slow file is being read. Once a file
+            // outruns the estimate there is nothing left to count, so the countdown is
+            // dropped rather than left frozen at 01s.
+            let title = match state.eta_secs {
+                Some(eta) => {
+                    let remaining = eta.saturating_sub(state_age_secs);
+                    if remaining > 0 {
+                        format!("Indexing Vault: {:.0}% ({})", *percentage, format_eta(remaining))
+                    } else {
+                        format!("Indexing Vault: {:.0}%", *percentage)
+                    }
+                }
+                None => format!("Indexing Vault: {:.0}%", *percentage),
+            };
+
+            return Some(AlfredOutput {
+                rerun: Some(0.2),
+                items: vec![
+                    Item::new(title)
+                        .set_subtitle(subtitle)
+                        .set_valid(false)
+                ]
+            });
+        }
+    }
+
+    None
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     
@@ -925,77 +1463,9 @@ fn main() {
     // If an indexer is actively writing, ALWAYS show the progress UI and rerun. The age
     // of the state file only matters when it has no usable pid: normally the recorded
     // worker pid is probed directly, so a slow worker is never mistaken for a dead one.
-    if state_path.exists() {
-        let state_age_secs = fs::metadata(&state_path)
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .map(|elapsed| elapsed.as_secs())
-            .unwrap_or(0);
-
-        let parsed_state: Option<State> = fs::read_to_string(&state_path)
-            .ok()
-            .and_then(|data| serde_json::from_str::<State>(&data).ok());
-
-        // Signal 0 checks existence only; it succeeds while the worker is running
-        let worker_pid = parsed_state.as_ref().and_then(|state| state.worker_pid);
-        let worker_alive = match worker_pid {
-            Some(pid) => unsafe { kill(pid as i32, 0) == 0 },
-            None => false,
-        };
-
-        let is_stale = match worker_pid {
-            Some(_) => !worker_alive,
-            // No pid to probe (state file from an older build, or unreadable)
-            None => state_age_secs > STALE_STATE_SECS,
-        };
-
-        if is_stale {
-            fs::remove_file(&state_path).ok();
-        } else {
-            let state = parsed_state.unwrap_or(State { progress: 0, total: 0, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None });
-
-            let percentage = if state.total > 0 {
-                (state.progress as f32 / state.total as f32) * 100.0
-            } else {
-                0.0
-            };
-
-            // With no total yet the status alone explains what is happening, which is
-            // what the cold-start and pre-scan states look like
-            let subtitle = if state.total > 0 {
-                format!("{} ({} of {} files processed). Please wait...", state.status, state.progress, state.total)
-            } else {
-                format!("{} Please wait...", state.status)
-            };
-
-            // The worker rewrites its own ETA as it goes; counting the state file's age off
-            // it keeps the number ticking while one slow file is being read. Once a file
-            // outruns the estimate there is nothing left to count, so the countdown is
-            // dropped rather than left frozen at 01s.
-            let title = match state.eta_secs {
-                Some(eta) => {
-                    let remaining = eta.saturating_sub(state_age_secs);
-                    if remaining > 0 {
-                        format!("Indexing Vault: {:.0}% ({})", percentage, format_eta(remaining))
-                    } else {
-                        format!("Indexing Vault: {:.0}%", percentage)
-                    }
-                }
-                None => format!("Indexing Vault: {:.0}%", percentage),
-            };
-
-            let output = AlfredOutput {
-                rerun: Some(0.2),
-                items: vec![
-                    Item::new(title)
-                        .set_subtitle(subtitle)
-                        .set_valid(false)
-                ]
-            };
-            println!("{}", serde_json::to_string(&output).unwrap());
-            return;
-        }
+    if let Some(output) = check_worker_status(&state_path, &mut 0.0) {
+        println!("{}", serde_json::to_string(&output).unwrap());
+        return;
     }
 
     let mut cached_data_opt = None;
@@ -1007,19 +1477,7 @@ fn main() {
     if cached_data_opt.is_none() {
         write_json_atomic(&state_path, &State { progress: 0, total: 0, status: "Starting Indexer...".to_string(), eta_secs: None, worker_pid: None });
 
-        let spawned = match env::current_exe() {
-            Ok(exe) => Command::new(exe)
-                .arg("worker")
-                .arg(target_key)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                // Own process group, so closing Alfred cannot signal the worker
-                .process_group(0)
-                .spawn()
-                .is_ok(),
-            Err(_) => false,
-        };
+        let spawned = spawn_worker(target_key);
 
         // A worker that never started would leave the UI pinned to a progress bar
         if !spawned {
@@ -1057,19 +1515,7 @@ fn main() {
                 let state = State { progress: 0, total: dirty_count as u32, status: "Indexing vault...".to_string(), eta_secs: None, worker_pid: None };
                 write_json_atomic(&state_path, &state);
 
-                let spawned = match env::current_exe() {
-                    Ok(exe) => Command::new(exe)
-                        .arg("worker")
-                        .arg(target_key)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        // Own process group, so closing Alfred cannot signal the worker
-                        .process_group(0)
-                        .spawn()
-                        .is_ok(),
-                    Err(_) => false,
-                };
+                let spawned = spawn_worker(target_key);
 
                 // A worker that never started would leave the UI pinned to a progress bar
                 if !spawned {
@@ -1089,51 +1535,10 @@ fn main() {
             }
 
             if dirty_count > 0 || scan.has_deleted {
-                // Small enough to fix inline: mutate the loaded caches in place so unchanged
-                // entries are never cloned or rebuilt from scratch
-                cached_data.files.retain(|res| scan.notes.contains_key(&res.path));
-                ocr_cache.retain(|path, _| scan.images.contains_key(path));
-
-                // Map surviving paths to their slot so a dirty note overwrites its own
-                // entry instead of being appended a second time
-                let mut slot_by_path: HashMap<String, usize> = HashMap::with_capacity(cached_data.files.len());
-                for (index, res) in cached_data.files.iter().enumerate() {
-                    slot_by_path.insert(res.path.clone(), index);
-                }
-
-                for path in &scan.dirty_notes {
-                    let modified = scan.notes.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
-                    let parsed = parse_note(path, modified);
-
-                    match slot_by_path.get(path).copied() {
-                        Some(index) => cached_data.files[index] = parsed,
-                        None => {
-                            slot_by_path.insert(path.clone(), cached_data.files.len());
-                            cached_data.files.push(parsed);
-                        }
-                    }
-                }
-
-                cached_data.files.sort_by(|a, b| b.modified.cmp(&a.modified));
-
-                for path in &scan.dirty_images {
-                    let modified = scan.images.get(path).copied().unwrap_or(SystemTime::UNIX_EPOCH);
-                    let text = recognize_text(path);
-                    ocr_cache.insert(path.clone(), OcrResult { modified, text });
-                }
-
-                cached_data.tag_recency = build_tag_recency(&cached_data.files);
-
-                write_json_atomic(&cache_path, &cached_data);
-                // The attachment cache is only rewritten when attachments changed or dropped
-                if !scan.dirty_images.is_empty() || scan.has_deleted {
-                    write_json_atomic(&ocr_cache_path, &ocr_cache);
-                }
-
-                cached_data_opt = Some(cached_data);
-            } else {
-                cached_data_opt = Some(cached_data);
+                reconcile_inline_cache(vault_dir, &mut cached_data, &mut ocr_cache, &scan, &cache_path, &ocr_cache_path);
             }
+
+            cached_data_opt = Some(cached_data);
         }
     }
 
@@ -1144,42 +1549,8 @@ fn main() {
     let tag_recency = cached_data.tag_recency;
     let mut items = Vec::new();
 
-    let ends_with_space = raw_query.ends_with(' ');
-    let last_term = all_terms.last().copied().unwrap_or("");
-    let is_autocompleting_tag = !ends_with_space && last_term.starts_with('#');
-
     // Tag Autocomplete Mode
-    if is_autocompleting_tag {
-        let partial_tag = last_term.trim_start_matches('#');
-        
-        let mut matched_tags: Vec<(&String, &SystemTime)> = tag_recency.iter()
-            .filter(|(t, _)| t.contains(partial_tag))
-            .collect();
-            
-        matched_tags.sort_by(|a, b| b.1.cmp(a.1));
-        
-        let prefix = if all_terms.len() > 1 {
-            let terms_before = &all_terms[..all_terms.len() - 1];
-            format!("{} ", terms_before.join(" "))
-        } else {
-            "".to_string()
-        };
-
-        for (tag, modified_time) in matched_tags.into_iter().take(30) {
-            let time_ago = format_time_ago(*modified_time);
-            items.push(
-                Item::new(format!("#{}", tag))
-                    .set_subtitle(format!("{}", time_ago))
-                    .set_autocomplete(format!("{}#{} ", prefix, tag))
-                    .set_valid(false)
-            );
-        }
-        
-        if items.is_empty() {
-            items.push(Item::new("No matching tags").set_valid(false));
-        }
-
-        let output = AlfredOutput { rerun: None, items };
+    if let Some(output) = handle_tag_autocomplete(raw_query, &all_terms, &tag_recency) {
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
     }
@@ -1251,149 +1622,8 @@ fn main() {
     // Full-text fallback: when title/tag matches are sparse, grep the note bodies so
     // notes that merely mention the query still surface. Every term has to appear
     // somewhere in the file; terms under two characters are too noisy to search for.
-    if !is_create_only && results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
-        // Keyed by borrowed path and holding a borrowed file, so building the lookup costs
-        // no clones at all. It spans the whole vault, which is what lets a content or
-        // attachment hit resolve for a note the title/tag filter dropped.
-        let file_lookup: HashMap<&str, &FileResult> = all_files
-            .iter()
-            .map(|res| (res.path.as_str(), res))
-            .collect();
-
-        // Read the extracted attachment text only here: no other code path needs it, and
-        // it is the largest file in the cache directory
-        let ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
-            .unwrap_or_default();
-
-        let matchers = build_term_matchers(&title_terms);
-
-        // Every term must have compiled, otherwise the search would silently
-        // ignore part of what the user typed
-        if matchers.len() == title_terms.len() {
-            let content_matches: Arc<Mutex<Vec<ContentMatch>>> = Arc::new(Mutex::new(Vec::new()));
-            let mut visitor_builder = ContentVisitorBuilder {
-                matchers,
-                matches: Arc::clone(&content_matches),
-            };
-
-            WalkBuilder::new(vault_dir)
-                .build_parallel()
-                .visit(&mut visitor_builder);
-
-            let found: Vec<ContentMatch> = match content_matches.lock() {
-                Ok(mut guard) => std::mem::take(&mut *guard),
-                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-            };
-
-            for content_match in found {
-                // Never list a note twice: title/tag hits keep their original entry
-                if results.iter().any(|res| res.path == content_match.path) {
-                    continue;
-                }
-
-                let cached = file_lookup.get(content_match.path.as_str()).copied();
-
-                // A content hit still has to satisfy the tag filter the user typed. A file
-                // with no cache entry has no known tags, so a tag filter excludes it.
-                if !tag_terms.is_empty() {
-                    let matches_tags = cached
-                        .map(|cached_file| {
-                            tag_terms
-                                .iter()
-                                .all(|term| cached_file.tags.iter().any(|t| t == *term))
-                        })
-                        .unwrap_or(false);
-
-                    if !matches_tags {
-                        continue;
-                    }
-                }
-
-                let mut file_result = match cached {
-                    Some(cached) => cached.clone(),
-                    // A file too new to be in the cache still deserves a row
-                    None => {
-                        let path = Path::new(&content_match.path);
-                        FileResult {
-                            title: path
-                                .file_stem()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&content_match.path)
-                                .to_string(),
-                            path: content_match.path.clone(),
-                            modified: fs::metadata(path)
-                                .and_then(|m| m.modified())
-                                .unwrap_or(SystemTime::UNIX_EPOCH),
-                            tags: Vec::new(),
-                            links: Vec::new(),
-                            snippet: None,
-                        }
-                    }
-                };
-
-                file_result.snippet = Some(content_match.snippet);
-                results.push(file_result);
-            }
-        }
-
-        // An attachment is never shown on its own: only the Markdown note that embeds it
-        // becomes an item, so Alfred always opens something editable. This covers image
-        // embeds and PDF attachments alike, since both are indexed the same way.
-        for (image_path, ocr_result) in &ocr_cache {
-            let lower_text = ocr_result.text.to_lowercase();
-            if !title_terms.iter().all(|term| lower_text.contains(*term)) {
-                continue;
-            }
-
-            let image_name = Path::new(image_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(image_path);
-
-            // Find the first line that actually contains one of the query terms to show as the snippet
-            let matching_line = ocr_result
-                .text
-                .lines()
-                .map(|l| l.trim())
-                .find(|l| {
-                    let lower_line = l.to_lowercase();
-                    title_terms.iter().any(|term| lower_line.contains(term))
-                })
-                .unwrap_or("");
-
-            for &cached_file in file_lookup.values() {
-                if !cached_file.links.iter().any(|l| l.eq_ignore_ascii_case(image_name)) {
-                    continue;
-                }
-
-                // An OCR hit still has to satisfy the tag filter the user typed
-                if !tag_terms.is_empty()
-                    && !tag_terms
-                        .iter()
-                        .all(|term| cached_file.tags.iter().any(|t| t == *term))
-                {
-                    continue;
-                }
-
-                if results.iter().any(|res| res.path == cached_file.path) {
-                    continue;
-                }
-
-                // A PDF reads as a document, anything else as an image
-                let is_pdf = Path::new(image_path)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("pdf"))
-                    .unwrap_or(false);
-                let icon = if is_pdf { "📄" } else { "🖼️" };
-
-                let mut file_result = cached_file.clone();
-                file_result.snippet = Some(format!("{} {}", icon, build_snippet(matching_line)));
-                results.push(file_result);
-            }
-        }
+    if !is_create_only {
+        execute_fallback_search(vault_dir, &title_terms, &tag_terms, &all_files, &mut results, &ocr_cache_path);
     }
 
     // Rank matches so exact title hits beat loose term hits, which in turn beat
@@ -1451,148 +1681,12 @@ fn main() {
     let has_multiple_vaults = vault_map.len() > 1;
 
     if !is_create_only {
-        for res in results.iter().take(50) {
-            // Show the note's location relative to the vault, without the filename
-            let note_path = Path::new(&res.path);
-            let location = match note_path.strip_prefix(vault_dir) {
-                Ok(relative) => match relative.parent() {
-                    Some(parent) if !parent.as_os_str().is_empty() => {
-                        if has_multiple_vaults {
-                            format!("{}/{}", vault_name, parent.to_string_lossy())
-                        } else {
-                            parent.to_string_lossy().into_owned()
-                        }
-                    }
-                    _ => {
-                        if has_multiple_vaults {
-                            vault_name.clone()
-                        } else {
-                            String::new()
-                        }
-                    }
-                },
-                Err(_) => {
-                    if has_multiple_vaults {
-                        vault_name.clone()
-                    } else {
-                        String::new()
-                    }
-                }
-            };
-
-            // When the title itself explains the match, the note's tags are more
-            // useful than the matched line; otherwise the snippet explains the hit
-            let lower_title = res.title.to_lowercase();
-            let title_matches_all_terms =
-                !title_terms.is_empty() && title_terms.iter().all(|term| lower_title.contains(term));
-
-            let subtitle = if !title_matches_all_terms && res.snippet.is_some() {
-                let snippet = res.snippet.as_ref().unwrap();
-                if location.is_empty() {
-                    snippet.clone()
-                } else {
-                    format!("{} | {}", location, snippet)
-                }
-            } else if res.tags.is_empty() {
-                location
-            } else if location.is_empty() {
-                format!("#{}", res.tags.join(" #"))
-            } else {
-                format!("{} | #{}", location, res.tags.join(" #"))
-            };
-
-            // Obsidian Advanced URI expects the note path relative to the vault root, without the .md extension
-            let arg_path = note_path
-                .strip_prefix(vault_dir)
-                .unwrap_or(note_path)
-                .to_string_lossy()
-                .trim_end_matches(".md")
-                .to_string();
-
-            let item = Item::new(res.title.clone())
-                .set_subtitle(subtitle)
-                .set_arg(format!(
-                    "obsidian://advanced-uri?vault={}&filepath={}|{}",
-                    url_encode(&vault_name),
-                    url_encode(&arg_path),
-                    res.title
-                ))
-                .set_valid(true);
-        
-            items.push(item);
-        }
+        items.extend(assemble_alfred_items(&results, vault_dir, &vault_name, &title_terms, has_multiple_vaults));
     }
 
     // Offer to open the existing note, or create a new one with the tags written into the body
     if allow_create && !is_empty_search {
-        let tag_string = tag_terms
-            .iter()
-            .map(|t| format!("#{}", t))
-            .collect::<Vec<String>>()
-            .join(" ");
-
-        let create_item = if is_duplicate {
-            // Open the existing note as-is; omit mode=new and data so tags are never appended
-            let open_uri = format!(
-                "obsidian://advanced-uri?vault={}&filepath={}|{}",
-                url_encode(&vault_name),
-                url_encode(&title_string),
-                title_string
-            );
-
-            Item::new(format!("Open existing \"{}\"", title_string))
-                .set_subtitle("Note already exists")
-                .set_arg(open_uri)
-                .set_valid(true)
-        } else {
-            // A slash in the typed title means the note lands in a subdirectory of the vault.
-            // The title shows only the note name; the directory is shown in the subtitle.
-            let new_note_path = Path::new(&title_string);
-            let file_name_str = new_note_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&title_string)
-                .to_string();
-            let parent_str = match new_note_path.parent() {
-                Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().into_owned(),
-                _ => String::new(),
-            };
-
-            let create_location = if !parent_str.is_empty() {
-                format!("{}/{}", vault_name, parent_str)
-            } else if has_multiple_vaults {
-                vault_name.clone()
-            } else {
-                String::new()
-            };
-
-            let create_subtitle = if tag_string.is_empty() {
-                create_location
-            } else if create_location.is_empty() {
-                tag_string.clone()
-            } else {
-                format!("{} | {}", create_location, tag_string)
-            };
-
-            let body_string = if tag_string.is_empty() {
-                String::new()
-            } else {
-                format!("\n\n{}", tag_string)
-            };
-
-            let create_uri = format!(
-                "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}|{}",
-                url_encode(&vault_name),
-                url_encode(&title_string),
-                url_encode(&body_string),
-                title_string
-            );
-
-            Item::new(format!("Create \"{}\"", file_name_str))
-                .set_subtitle(create_subtitle)
-                .set_arg(create_uri)
-                .set_valid(true)
-        };
+        let create_item = build_create_item(&title_string, &tag_terms, &vault_name, is_duplicate, has_multiple_vaults);
 
         if !is_create_only && items.len() >= 2 {
             items.insert(2, create_item);
