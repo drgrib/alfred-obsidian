@@ -74,9 +74,6 @@ fn main() {
     let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
     let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
 
-    // If an indexer is actively writing, ALWAYS show the progress UI and rerun. The age
-    // of the state file only matters when it has no usable pid: normally the recorded
-    // worker pid is probed directly, so a slow worker is never mistaken for a dead one.
     if let Some(output) = check_worker_status(&state_path) {
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
