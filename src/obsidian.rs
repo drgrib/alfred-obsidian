@@ -137,11 +137,3 @@ pub fn route_key<'a>(term: &str, vault_map: &'a HashMap<String, String>) -> Opti
 
     best
 }
-
-/// True when the term is exactly a routing key (not a nested child of one). Exact keys
-/// only select a vault and are not written into the note as tags; a nested child is
-/// kept as a tag since it carries more than the routing decision.
-pub fn is_exact_route_key(term: &str, vault_map: &HashMap<String, String>) -> bool {
-    let lower_term = term.to_lowercase();
-    vault_map.keys().any(|key| key.to_lowercase() == lower_term)
-}

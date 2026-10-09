@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 use crate::alfred::*;
 use crate::cache::*;
-use crate::obsidian::{is_exact_route_key, resolve_vault_target, route_key, VaultTarget};
+use crate::obsidian::{resolve_vault_target, route_key, VaultTarget};
 use crate::ocr_pool::run_ocr_shard;
 use crate::search::*;
 use crate::types::*;
@@ -255,10 +255,11 @@ fn main() {
         .copied()
         .collect();
 
-    // An exact routing key only selects the create vault; a nested child of one is kept
-    // as a real tag because it says more than which vault to use
+    // Every typed tag is a real tag, including a routing key such as `#corp-google`:
+    // it picks the create vault, is written into the new note's body, and filters the
+    // search like any other tag
     let tag_terms: Vec<&str> = all_terms.iter()
-        .filter(|t| t.starts_with('#') && !is_exact_route_key(t, &vault_map))
+        .filter(|t| t.starts_with('#'))
         .map(|t| t.trim_start_matches('#'))
         .collect();
 
