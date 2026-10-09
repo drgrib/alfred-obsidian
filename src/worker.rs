@@ -243,9 +243,9 @@ pub fn run_worker(target_keys: &[String]) {
         let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
         let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
 
-        let cached_files: Vec<FileResult> = fs::read_to_string(&cache_path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<VaultCache>(&content).ok())
+        // Read through load_cache so a cache from an older parser is discarded here too,
+        // rather than having its entries carried forward as "unchanged"
+        let cached_files: Vec<FileResult> = load_cache(&cache_path)
             .map(|cache| cache.files)
             .unwrap_or_default();
 
@@ -331,7 +331,7 @@ pub fn run_worker(target_keys: &[String]) {
         results.sort_by(|a, b| b.modified.cmp(&a.modified));
         let tag_recency = build_tag_recency(&results);
         if !scan.dirty_notes.is_empty() || scan.has_deleted {
-            write_json_atomic(&cache_path, &VaultCacheRef { files: &results, tag_recency: &tag_recency });
+            write_json_atomic(&cache_path, &VaultCacheRef { files: &results, tag_recency: &tag_recency, parser_version: PARSER_VERSION });
         }
 
         state.progress = (notes_done + images_done) as u32;
@@ -382,7 +382,7 @@ pub fn run_worker(target_keys: &[String]) {
 
         // The sort and tag recency were computed when the notes finished; reading
         // attachments changes neither, so the values from before the OCR pass still hold
-        write_json_atomic(&cache_path, &VaultCacheRef { files: &results, tag_recency: &tag_recency });
+        write_json_atomic(&cache_path, &VaultCacheRef { files: &results, tag_recency: &tag_recency, parser_version: PARSER_VERSION });
     }
     // Every state file is removed by the guard here, whichever way the worker ended
 }

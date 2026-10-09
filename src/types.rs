@@ -103,10 +103,17 @@ pub struct ContentMatch {
     pub snippet: String,
 }
 
+/// Bumped whenever the note parser changes what it extracts. A cache written by an
+/// older parser is discarded on load, so every note is re-read instead of keeping
+/// stale tags until its modification time happens to change.
+pub const PARSER_VERSION: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 pub struct VaultCache {
     pub files: Vec<FileResult>,
     pub tag_recency: HashMap<String, SystemTime>,
+    #[serde(default)]
+    pub parser_version: u32,
 }
 
 /// Borrowed view of `VaultCache` with the same JSON shape, so the worker can write a
@@ -115,6 +122,7 @@ pub struct VaultCache {
 pub struct VaultCacheRef<'a> {
     pub files: &'a [FileResult],
     pub tag_recency: &'a HashMap<String, SystemTime>,
+    pub parser_version: u32,
 }
 
 #[derive(Serialize, Deserialize)]

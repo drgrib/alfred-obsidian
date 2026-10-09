@@ -149,9 +149,15 @@ pub fn collect_vault_files(
     }
 }
 
+/// Normalises a candidate tag the way Obsidian does: the leading `#` is dropped, only
+/// letters, digits, `_`, `-` and `/` are allowed, and the result must contain at least
+/// one non-digit, since `#0` or `#2024` are never tags, even in plain prose.
 pub fn clean_tag(raw_tag: &str) -> Option<String> {
     let t = raw_tag.trim().trim_start_matches('#');
-    if t.is_empty() || t.contains(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/') {
+    if t.is_empty()
+        || t.contains(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/')
+        || t.chars().all(|c| c.is_ascii_digit())
+    {
         None
     } else {
         Some(t.to_lowercase())
@@ -167,6 +173,105 @@ pub fn parse_inline_list(val: &str, tags: &mut HashSet<String>) {
     }
 }
 
+/// Returns the line with every enclosed span blanked out, leaving only plain prose for
+/// the tag pass. A `#word` inside any of these is not a tag in Obsidian or Markdown:
+///
+/// - inline code `` `...` ``
+/// - wikilinks `[[...]]`, markdown links `[...](...)` and bare bracketed text `[...]`
+/// - emphasis `*...*` / `**...**`, strikethrough `~~...~~`, highlight `==...==`
+/// - inline and display math `$...$` / `$$...$$`
+/// - Obsidian comments `%%...%%` and HTML comments `<!--...-->`
+///
+/// Each span is replaced by a single space so the words on either side stay separate.
+/// An unterminated span is left alone, except for `%%` comments, which Obsidian lets
+/// run across lines: `in_comment` carries that state to the next call.
+///
+/// Underscore emphasis is deliberately not handled: `_` is a legal tag character, so
+/// `#a_b and #c_d` would otherwise lose everything between the underscores.
+pub fn strip_enclosed_spans(line: &str, in_comment: &mut bool) -> String {
+    // Longer delimiters first, so `**` is not consumed as two `*` and `$$` as two `$`
+    const PAIRS: &[(&str, &str)] = &[
+        ("<!--", "-->"),
+        ("%%", "%%"),
+        ("```", "```"),
+        ("`", "`"),
+        ("[[", "]]"),
+        ("$$", "$$"),
+        ("$", "$"),
+        ("**", "**"),
+        ("*", "*"),
+        ("~~", "~~"),
+        ("==", "=="),
+    ];
+
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+
+    while !rest.is_empty() {
+        // Inside a comment that began on an earlier line: skip up to its close
+        if *in_comment {
+            match rest.find("%%") {
+                Some(end) => {
+                    rest = &rest[end + 2..];
+                    *in_comment = false;
+                    out.push(' ');
+                    continue;
+                }
+                None => return out,
+            }
+        }
+
+        let mut consumed = false;
+
+        for (open, close) in PAIRS {
+            if !rest.starts_with(open) {
+                continue;
+            }
+            let body = &rest[open.len()..];
+            match body.find(close) {
+                Some(end) => {
+                    // The span and both delimiters vanish; a space keeps neighbours apart
+                    out.push(' ');
+                    rest = &body[end + close.len()..];
+                    consumed = true;
+                }
+                None if *open == "%%" => {
+                    // An opening %% with no close starts a block comment
+                    *in_comment = true;
+                    return out;
+                }
+                None => {}
+            }
+            break;
+        }
+        if consumed {
+            continue;
+        }
+
+        // A markdown link or bracketed text: `[label](target)` or just `[label]`
+        if rest.starts_with('[') {
+            if let Some(end) = rest.find(']') {
+                let mut after = &rest[end + 1..];
+                if after.starts_with('(') {
+                    if let Some(paren_end) = after.find(')') {
+                        after = &after[paren_end + 1..];
+                    }
+                }
+                out.push(' ');
+                rest = after;
+                continue;
+            }
+        }
+
+        // Ordinary character: copy it and move on
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+
+    out
+}
+
 /// Parses a note's tags and the basenames of the files it embeds in one pass.
 pub fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
     let mut tags = HashSet::new();
@@ -178,6 +283,9 @@ pub fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
         let mut in_frontmatter = false;
         let mut line_count = 0;
         let mut inside_tags_block = false;
+        // Multi-line constructs whose contents are never tags
+        let mut in_fence = false;
+        let mut in_comment = false;
 
         for line_result in reader.lines() {
             let line = match line_result {
@@ -217,8 +325,15 @@ pub fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
                 } else if !trimmed.is_empty() {
                     inside_tags_block = false;
                 }
-            } else {
-                for word in line.split_whitespace() {
+            } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                // Fenced code blocks span lines; nothing inside one is a tag, and the
+                // fence line itself carries only the language hint
+                in_fence = !in_fence;
+            } else if !in_fence {
+                // Only plain prose can hold a tag: code, links, brackets, emphasis and
+                // the other enclosing syntaxes are removed before the words are read
+                let prose = strip_enclosed_spans(&line, &mut in_comment);
+                for word in prose.split_whitespace() {
                     if word.starts_with('#') {
                         if let Some(clean) = clean_tag(word) {
                             tags.insert(clean);
@@ -305,8 +420,10 @@ pub fn build_tag_recency(files: &[FileResult]) -> HashMap<String, SystemTime> {
 pub fn load_cache(cache_path: &Path) -> Option<VaultCache> {
     match fs::read_to_string(cache_path) {
         Ok(file_content) => match serde_json::from_str::<VaultCache>(&file_content) {
-            Ok(parsed_data) => Some(parsed_data),
-            Err(_) => {
+            // A cache from an older parser is treated like a corrupt one: removing it
+            // triggers a cold start, so every note is re-read with the current rules
+            Ok(parsed_data) if parsed_data.parser_version == PARSER_VERSION => Some(parsed_data),
+            Ok(_) | Err(_) => {
                 fs::remove_file(cache_path).ok();
                 None
             }
@@ -392,6 +509,7 @@ pub fn reconcile_inline_cache(
     }
 
     cached_data.tag_recency = build_tag_recency(&cached_data.files);
+    cached_data.parser_version = PARSER_VERSION;
 
     write_json_atomic(cache_path, cached_data);
     // The attachment cache is only rewritten when attachments changed or dropped
