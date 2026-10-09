@@ -387,52 +387,6 @@ pub fn run_worker(target_keys: &[String]) {
     // Every state file is removed by the guard here, whichever way the worker ended
 }
 
-/// Decides whether a vault that is not being displayed needs the background worker.
-///
-/// Returns the number of files the worker would have to read when it does: every file
-/// for a vault with no cache yet, or the dirty count when it exceeds the inline limits.
-/// Returns `None` when the vault is up to date, when its directory is missing, or when
-/// the change was small enough to fix inline right here.
-pub fn plan_vault_refresh(target_key: &str, raw_path: &str, cache_dir: &Path) -> Option<usize> {
-    let expanded_path = expand_tilde(raw_path);
-    let vault_dir = Path::new(&expanded_path);
-    if !vault_dir.exists() {
-        return None;
-    }
-
-    let clean_key = target_key.replace("#", "");
-    let cache_path = cache_dir.join(format!("vault_cache_{}.json", clean_key));
-    let ocr_cache_path = cache_dir.join(format!("ocr_cache_{}.json", clean_key));
-
-    let mut ocr_cache: OcrCache = fs::read_to_string(&ocr_cache_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<OcrCache>(&content).ok())
-        .unwrap_or_default();
-
-    let mut cached_data = match load_cache(&cache_path) {
-        Some(cached_data) => cached_data,
-        None => {
-            // Cold start: the walk against an empty cache counts every file, so the
-            // batch total is right from the first frame rather than after the worker scans
-            let scan = scan_vault(vault_dir, &[], &OcrCache::default());
-            return Some(scan.dirty_notes.len() + scan.dirty_images.len());
-        }
-    };
-
-    let scan = scan_vault(vault_dir, &cached_data.files, &ocr_cache);
-    let dirty_count = scan.dirty_notes.len() + scan.dirty_images.len();
-
-    if dirty_count > DIRTY_FILE_THRESHOLD || scan.dirty_images.len() > DIRTY_IMAGE_THRESHOLD {
-        return Some(dirty_count);
-    }
-
-    if dirty_count > 0 || scan.has_deleted {
-        reconcile_inline_cache(vault_dir, &mut cached_data, &mut ocr_cache, &scan, &cache_path, &ocr_cache_path);
-    }
-
-    None
-}
-
 /// Writes the initial state file for every vault in `pending`, spawns one worker for
 /// the whole batch, and returns the first frame of the progress UI. Each entry pairs a
 /// vault key with the number of files its indexing will read; the sum is the batch total.
