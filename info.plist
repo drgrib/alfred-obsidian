@@ -680,7 +680,7 @@
 			<key>description</key>
 			<string>Off by default: the fast recognizer is several times cheaper on CPU and battery and is enough for search recall on most screenshots. Turn on for better results on small or stylized text. Changing this does not re-index existing attachments.</string>
 			<key>label</key>
-			<string>Accurate OCR</string>
+			<string>More Accurate, Slower OCR</string>
 			<key>type</key>
 			<string>checkbox</string>
 			<key>variable</key>
