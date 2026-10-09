@@ -281,15 +281,13 @@ fn main() {
         .collect::<Vec<&str>>()
         .join("/");
 
-    let title_string = if title_string.is_empty() {
-        "Untitled".to_string()
-    } else {
-        title_string
-    };
+    // A create row needs a title. Tags alone (`#corp-google`, `#project`) only filter
+    // the search; they never produce an "Untitled" note.
+    let has_title = !title_string.is_empty();
+    let show_create = allow_create && has_title;
 
     // Checked against the whole create vault, and only when a create item will be shown
-    let is_duplicate = allow_create
-        && !is_empty_search
+    let is_duplicate = show_create
         && vault_files[target_index]
             .iter()
             .any(|res| res.title.eq_ignore_ascii_case(&title_string));
@@ -300,6 +298,11 @@ fn main() {
 
     if !is_create_only {
         for (index, files) in vault_files.iter().enumerate() {
+            // A vault configured for another machine has nothing to search here
+            if !vaults[index].dir.exists() {
+                continue;
+            }
+
             // Built from the full list rather than by narrowing it, so the fallback below
             // can still add content and attachment hits for notes the filter dropped
             let mut vault_results: Vec<FileResult> = if is_empty_search {
@@ -395,7 +398,7 @@ fn main() {
     }
 
     // Offer to open the existing note, or create a new one with the tags written into the body
-    if allow_create && !is_empty_search {
+    if show_create {
         let create_item = build_create_item(&title_string, &tag_terms, &targets[target_index], is_duplicate, has_multiple_vaults);
 
         if !is_create_only && items.len() >= 2 {
@@ -407,10 +410,11 @@ fn main() {
 
     if items.is_empty() {
         let scope = if has_multiple_vaults { "all vaults".to_string() } else { format!("the {} vault", target_key) };
-        if is_create_only && is_empty_search {
+        if is_create_only && !has_title {
+            // Nothing to create yet: either no input at all, or only tags so far
             items.push(
                 Item::new("Create a new note")
-                    .set_subtitle("Enter a title or #tags")
+                    .set_subtitle(if tag_terms.is_empty() { "Enter a title or #tags".to_string() } else { format!("Enter a title for #{}", tag_terms.join(" #")) })
                     .set_valid(false)
             );
         } else if is_empty_search {
