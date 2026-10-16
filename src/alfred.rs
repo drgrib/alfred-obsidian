@@ -163,14 +163,19 @@ pub fn assemble_alfred_items(
             format!("{} | #{}", location, res.tags.join(" #"))
         };
 
-        // Advanced URI takes the note path relative to the vault root. The `.md` is kept:
-        // `filepath()` guarantees it, so a title with a period in it still resolves to
-        // the markdown file rather than to a file with a made-up extension
-        let arg_path = note_path
+        // Advanced URI takes the note path relative to the vault root. Exactly one `.md`
+        // (the real extension on disk) is removed here and `filepath()` adds it back, so
+        // a note titled `README.md`, stored as `README.md.md`, round-trips correctly
+        let relative = note_path
             .strip_prefix(vault_dir)
             .unwrap_or(note_path)
             .to_string_lossy()
             .into_owned();
+        let arg_path = relative
+            .strip_suffix(".md")
+            .or_else(|| relative.strip_suffix(".MD"))
+            .unwrap_or(&relative)
+            .to_string();
 
         let item = Item::new(res.title.clone())
             .set_subtitle(subtitle)

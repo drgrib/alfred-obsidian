@@ -26,25 +26,23 @@ pub struct VaultTarget {
 }
 
 impl VaultTarget {
-    /// Joins a note path (relative to the configured directory) onto the vault-root
-    /// relative prefix, which is what Advanced URI's `filepath` expects.
+    /// Joins a note name (relative to the configured directory, without extension) onto
+    /// the vault-root relative prefix and appends `.md`, which is what Advanced URI's
+    /// `filepath` expects.
     ///
-    /// The result always ends in `.md`. Without an explicit extension Obsidian appends
-    /// one only when the name has no period at all, so `Release 1.2` would be created or
-    /// looked up as a file literally named `Release 1.2` with extension `2`.
+    /// The extension is always added explicitly. Left to guess, Obsidian treats whatever
+    /// follows the last period as the extension, so `Release 1.2` would become a file
+    /// named `Release 1` with extension `2`. Because the caller never includes an
+    /// extension, a note genuinely titled `README.md` correctly maps to `README.md.md`.
+    /// An empty name yields the bare prefix, never a note named after it.
     pub fn filepath(&self, relative: &str) -> String {
-        let joined = if self.prefix.is_empty() {
-            relative.to_string()
-        } else if relative.is_empty() {
-            self.prefix.clone()
+        if relative.is_empty() {
+            return self.prefix.clone();
+        }
+        if self.prefix.is_empty() {
+            format!("{}.md", relative)
         } else {
-            format!("{}/{}", self.prefix, relative)
-        };
-
-        if joined.to_lowercase().ends_with(".md") {
-            joined
-        } else {
-            format!("{}.md", joined)
+            format!("{}/{}.md", self.prefix, relative)
         }
     }
 }
