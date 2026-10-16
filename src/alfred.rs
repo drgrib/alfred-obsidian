@@ -163,13 +163,14 @@ pub fn assemble_alfred_items(
             format!("{} | #{}", location, res.tags.join(" #"))
         };
 
-        // Obsidian Advanced URI expects the note path relative to the vault root, without the .md extension
+        // Advanced URI takes the note path relative to the vault root. The `.md` is kept:
+        // `filepath()` guarantees it, so a title with a period in it still resolves to
+        // the markdown file rather than to a file with a made-up extension
         let arg_path = note_path
             .strip_prefix(vault_dir)
             .unwrap_or(note_path)
             .to_string_lossy()
-            .trim_end_matches(".md")
-            .to_string();
+            .into_owned();
 
         let item = Item::new(res.title.clone())
             .set_subtitle(subtitle)
