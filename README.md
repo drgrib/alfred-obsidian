@@ -1,6 +1,6 @@
 # Obsidian Workflow
 
-Streamlined note searching and creation for [Obsidian](https://obsidian.md/) using [Alfred](https://www.alfredapp.com/). Spiritual successor to [`alfred-bear`](https://github.com/drgrib/alfred-bear) with substantially improved performance and macOS Vision OCR + PDF attachment indexing.
+High-speed note searching and creation for [Obsidian](https://obsidian.md/) using [Alfred](https://www.alfredapp.com/). Spiritual successor to [`alfred-bear`](https://github.com/drgrib/alfred-bear) with substantially improved performance and macOS Vision OCR + PDF attachment indexing.
 
 ## Install
 
