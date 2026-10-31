@@ -11,7 +11,7 @@ Streamlined note searching and creation for [Obsidian](https://obsidian.md/) usi
 
 ## Caching
 
-The first time you run the workflow, it indexes your vault—including text in images and PDFs—in the background (you can close Alfred while it finishes). A 32,726-file vault (**22,350 notes, 9,848 images, and 528 PDFs**) indexed in **1m 11s**, and you only do it once: day-to-day edits update incrementally, and every keystroke searches instantly from the cache.
+The first time you run the workflow, it indexes your vault. This process is very fast and you can even exit the workflow while it finishes in the background. As an example of how fast it is, for my 32,726-file vault (**22,350 notes, 9,848 images, and 528 PDFs**), the initial index completed in **1m 11s**. After that, day-to-day edits rapidly index incrementally every time you open the workflow, and there is no indexing after you start typing. Non-empty queries search instantly from the cache.
 
 ![Caching Progress](screenshots/caching.png)
 
