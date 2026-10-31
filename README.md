@@ -2,7 +2,7 @@
 
 Lean, high-speed note searching and creation for [Obsidian](https://obsidian.md/) using [Alfred](https://www.alfredapp.com/).
 
-Built in Rust as the spiritual successor to [`alfred-bear`](https://github.com/drgrib/alfred-bear), with a cache-first architecture for zero-latency typing, unified multi-vault search and tag-based vault routing, and native macOS Vision OCR + PDF attachment indexing.
+Built in Rust as the spiritual successor to [`alfred-bear`](https://github.com/drgrib/alfred-bear), with a cache-first architecture for low-latency typing, unified multi-vault search, tag-based vault routing, and native macOS Vision OCR + PDF attachment indexing.
 
 ## Requirements
 
@@ -38,7 +38,7 @@ Click **Configure Workflow...** on the workflow canvas in Alfred Preferences to 
 - **Vault Map** *(required)*: `key: path` pairs, one per line.
   - `default:` is required and sets your primary vault (e.g., `default: ~/Documents/ObsidianVault`).
   - Additional vaults can be mapped to `#tag:` keys (e.g., `#work: ~/WorkDrive/Obsidian/Work`) for unified cross-vault search and tag-routed note creation (see [Multi-Vault Support](#multi-vault-support)).
-- **More Accurate, Slower OCR** *(optional, off by default)*: Switches macOS Vision from its fast text recognizer to its accurate recognizer when indexing image attachments and scanned PDF pages. Fast mode uses a fraction of the CPU/battery and is more than enough for typical screenshots; enable this if you regularly search dense, small, or stylized text.
+- **More Accurate, Slower OCR** *(optional, off by default)*: Switches macOS Vision from its fast text recognizer to its accurate recognizer when indexing image attachments and scanned PDF pages. Fast mode uses a fraction of the CPU/battery and is more than enough for typical screenshots; enable this only if you regularly search dense, small, or stylized text.
 - **OCR Workers** *(optional, default `auto`)*: Number of parallel isolated worker processes used when indexing attachments. Leaving this blank uses one per CPU core, up to 8.
 
 ## Caching & Initial Indexing
