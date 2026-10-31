@@ -6,7 +6,7 @@ Built in Rust as the spiritual successor to [`alfred-bear`](https://github.com/d
 
 ## Requirements
 
-- **macOS on Apple Silicon** (`arm64` — Intel Macs are not supported)
+- **macOS** (Apple Silicon)
 - **Alfred 5** with the [Powerpack](https://www.alfredapp.com/powerpack/)
 - **Obsidian** with the **[Advanced URI](https://github.com/Vinzent03/obsidian-advanced-uri)** community plugin installed and **enabled in every vault** you configure
   - *Note: Obsidian manages community plugins per vault. If you configure multiple vaults, make sure Advanced URI is installed and enabled in each one.*
@@ -163,7 +163,6 @@ Two practical limitations prompted migrating from Bear to Obsidian:
 - **Built-in Image OCR & PDF Indexing**: Searches text inside embedded images and PDFs locally via macOS Vision and PDFKit without needing external services.
 - **Native Wikilinks**: `⇧ + Enter` pastes `[[Note Title]]` wikilinks rather than app-specific callback URLs.
 - **No Table of Contents (`⌘ + ⇧`) Pasting**: Dropped from `alfred-bear` due to low day-to-day usage (Obsidian natively supports `[[Note#Heading]]` autocompletion).
-- **Apple Silicon Only**: Distributed exclusively as a native Apple Silicon (`arm64`) binary; Intel/Rosetta support has been retired.
 
 ## License
 
