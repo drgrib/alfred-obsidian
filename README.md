@@ -17,7 +17,7 @@ The first time you run the workflow, it indexes your vault. This process is very
 
 ## Search
 
-`obsidiansearch` (or assign a hotkey)
+`obsidiansearch` (or assign a hotkey, as I have in the examples; I use alt+o)
 
 ### Recent Notes
 
@@ -67,7 +67,7 @@ Searches existing notes and places a **Create** option at the third result (or a
 
 ## Multi-Vault
 
-Add `#tag: path` lines under `default:` in **Vault Map** to use multiple vaults:
+Add `#tag: path` lines under `default:` in **Vault Map** to use multiple vaults. For example:
 
 ```yaml
 default: ~/Drive/Obsidian/Personal
