@@ -9,7 +9,7 @@ Streamlined note searching and creation for [Obsidian](https://obsidian.md/) usi
 3. Set your vault path in **Vault Map**: `default: ~/path/to/vault` (see [Multi-Vault](#multi-vault) for multiple vaults).
 4. [Authorize the executable](#authorize-executable).
 
-## Caching
+## First-Time Startup Caching
 
 The first time you run the workflow, it indexes your vault. This process is very fast and you can even exit the workflow while it finishes in the background. As an example of how fast it is: my 32,726-file vault (**22,350 notes, 9,848 images, and 528 PDFs**) completed in **1m 11s**. After that, day-to-day edits rapidly index incrementally every time you open the workflow. And there is no indexing after you start typing. Non-empty queries search instantly from the cache.
 
