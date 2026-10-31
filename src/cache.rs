@@ -272,7 +272,86 @@ pub fn strip_enclosed_spans(line: &str, in_comment: &mut bool) -> String {
     out
 }
 
-/// Parses a note's tags and the basenames of the files it embeds in one pass.
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decodes `%XX` byte sequences (such as `%20` for spaces or `%28`/`%29` for parentheses
+/// in Markdown exports) as UTF-8, leaving any malformed `%` sequence untouched.
+fn percent_decode(input: &str) -> String {
+    if !input.contains('%') {
+        return input.to_string();
+    }
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Strips an optional trailing Markdown link title (`path/img.png "Title"` or `'Title'`).
+fn strip_markdown_link_title(dest: &str) -> &str {
+    let trimmed = dest.trim();
+    if let Some(quote) = trimmed.chars().last().filter(|&c| c == '"' || c == '\'') {
+        let inner = &trimmed[..trimmed.len() - quote.len_utf8()];
+        if let Some(open_pos) = inner.rfind(quote) {
+            let before = &inner[..open_pos];
+            if before.ends_with(char::is_whitespace) {
+                return before.trim_end();
+            }
+        }
+    }
+    trimmed
+}
+
+/// Normalizes a raw wikilink or Markdown link target down to its attachment path (keeping
+/// any directory prefix), or returns `None` for external URLs and non-attachment targets.
+fn clean_attachment_link(raw: &str, url_encoded: bool) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    for scheme in ["http://", "https://", "mailto:", "obsidian://", "data:", "file://"] {
+        if lower.starts_with(scheme) {
+            return None;
+        }
+    }
+
+    // Strip `#page=3` / `#anchor` before percent-decoding so `%23` in an encoded filename
+    // still decodes to a literal `#`
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed).trim();
+    let decoded = if url_encoded {
+        percent_decode(without_fragment)
+    } else {
+        without_fragment.to_string()
+    };
+
+    let normalized = decoded.replace('\\', "/").trim().to_string();
+    if normalized.is_empty() || !is_supported_image(Path::new(&normalized)) {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+/// Parses a note's tags and embedded attachment links in one pass.
 pub fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
     let mut tags = HashSet::new();
     let mut links = HashSet::new();
@@ -349,12 +428,11 @@ pub fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
                 ptr = &ptr[start + 2..];
                 if let Some(end) = ptr.find("]]") {
                     let content = &ptr[..end];
-                    // Drop the display alias first, then any #page= / #anchor fragment,
-                    // so `[[paper.pdf#page=3|See p3]]` still resolves to paper.pdf
+                    // Drop any `|alias` or `|400` resize suffix first, then clean the path
+                    // while keeping directory components intact
                     let target = content.split('|').next().unwrap_or(content);
-                    let target = target.split('#').next().unwrap_or(target).trim();
-                    if let Some(name) = Path::new(target).file_name().and_then(|n| n.to_str()) {
-                        links.insert(name.to_string());
+                    if let Some(clean) = clean_attachment_link(target, false) {
+                        links.insert(clean);
                     }
                     ptr = &ptr[end + 2..];
                 } else {
@@ -365,22 +443,59 @@ pub fn extract_tags_and_links(path: &Path) -> (Vec<String>, Vec<String>) {
             let mut ptr = line.as_str();
             while let Some(start) = ptr.find("](") {
                 ptr = &ptr[start + 2..];
-                if let Some(end) = ptr.find(')') {
-                    // Same idea here: ![](paper.pdf#page=3) must still match paper.pdf
-                    let target = &ptr[..end];
-                    let target = target.split('#').next().unwrap_or(target).trim();
-                    if let Some(name) = Path::new(target).file_name().and_then(|n| n.to_str()) {
-                        links.insert(name.replace("%20", " "));
+                let trimmed_start = ptr.trim_start();
+                if let Some(after_lt) = trimmed_start.strip_prefix('<') {
+                    if let Some(gt_pos) = after_lt.find('>') {
+                        let raw_target = &after_lt[..gt_pos];
+                        if let Some(clean) = clean_attachment_link(raw_target, true) {
+                            links.insert(clean);
+                        }
+                        let rest = &after_lt[gt_pos + 1..];
+                        if let Some(close_paren) = rest.find(')') {
+                            ptr = &rest[close_paren + 1..];
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
                     }
-                    ptr = &ptr[end + 1..];
                 } else {
-                    break;
+                    // Track balanced parentheses so unencoded parens in a folder or file
+                    // name like `![](note (xkcd)/image.png)` do not stop at the inner `)`
+                    let mut depth = 0usize;
+                    let mut end_idx = None;
+                    for (idx, ch) in ptr.char_indices() {
+                        match ch {
+                            '(' => depth += 1,
+                            ')' => {
+                                if depth == 0 {
+                                    end_idx = Some(idx);
+                                    break;
+                                }
+                                depth -= 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(end) = end_idx {
+                        let raw_dest = strip_markdown_link_title(&ptr[..end]);
+                        if let Some(clean) = clean_attachment_link(raw_dest, true) {
+                            links.insert(clean);
+                        }
+                        ptr = &ptr[end + 1..];
+                    } else {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    (tags.into_iter().collect(), links.into_iter().collect())
+    let mut tag_list: Vec<String> = tags.into_iter().collect();
+    tag_list.sort();
+    let mut link_list: Vec<String> = links.into_iter().collect();
+    link_list.sort();
+    (tag_list, link_list)
 }
 
 /// Reads one note's tags and embeds and builds its cache entry.

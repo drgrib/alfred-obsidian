@@ -76,10 +76,11 @@ pub struct FileResult {
     pub path: String,
     pub modified: SystemTime,
     pub tags: Vec<String>,
-    /// Basenames of every file this note embeds (`![[image.png]]`, `![](image.png)` or
-    /// `![[paper.pdf]]`), used to route attachment text hits back to the note that
-    /// displays the attachment. Aliases and fragments are stripped, so
-    /// `[[paper.pdf#page=3|See p3]]` is stored as `paper.pdf`.
+    /// Attachment targets this note embeds (`![[folder/image.png]]`, `![](folder/image.png)`,
+    /// `![[Pasted image.png]]`, or `![[paper.pdf]]`), keeping any folder path so generic
+    /// filenames like `image.png` resolve to the note's own attachment rather than
+    /// colliding across the vault. Aliases, titles, URL encoding, and `#` fragments are
+    /// stripped.
     pub links: Vec<String>,
     /// Set only for notes found via content search; never persisted to the cache.
     #[serde(skip)]
@@ -106,7 +107,7 @@ pub struct ContentMatch {
 /// Bumped whenever the note parser changes what it extracts. A cache written by an
 /// older parser is discarded on load, so every note is re-read instead of keeping
 /// stale tags until its modification time happens to change.
-pub const PARSER_VERSION: u32 = 2;
+pub const PARSER_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 pub struct VaultCache {

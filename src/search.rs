@@ -4,9 +4,9 @@ use grep_searcher::Searcher;
 use ignore::{
     DirEntry, Error as IgnoreError, ParallelVisitor, ParallelVisitorBuilder, WalkBuilder, WalkState,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -155,6 +155,105 @@ impl ParallelVisitor for ContentVisitor {
     }
 }
 
+/// Converts an absolute path inside `vault_dir` into a lowercase, `/`-separated path
+/// relative to the vault root (for example, `"notes/2011 ford fiesta/image.png"`).
+fn vault_rel_lower(vault_dir: &Path, full_path: &Path) -> Option<String> {
+    let rel = full_path.strip_prefix(vault_dir).ok()?;
+    let mut parts: Vec<String> = Vec::new();
+    for comp in rel.components() {
+        if let Component::Normal(os) = comp {
+            parts.push(os.to_string_lossy().to_lowercase());
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Joins a `/`-separated link path onto a lowercase vault-relative directory, resolving
+/// `.` and `..` lexically without touching the filesystem.
+fn join_vault_rel(base_dir: &str, link: &str) -> Option<String> {
+    let mut parts: Vec<String> = if base_dir.is_empty() {
+        Vec::new()
+    } else {
+        base_dir
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    };
+
+    for seg in link.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other.to_lowercase()),
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+/// Resolves a note's attachment link to the lowercase vault-relative path of an indexed
+/// attachment, matching Markdown and Obsidian resolution rules so generic filenames like
+/// `image.png` in different folders never bleed across notes:
+///
+/// 1. Explicit paths containing `/`:
+///    - Leading `/` resolves strictly from the vault root.
+///    - Leading `./` or `../` resolves strictly from the note's directory.
+///    - Any other `folder/file.png` tries the note's directory first (standard Markdown
+///      and Bear exports like `Note Title/image.png`), falling back to the vault root
+///      (Obsidian vault-relative wikilinks like `Attachments/image.png`).
+/// 2. Bare filenames without `/`:
+///    - Prefers a sibling file in the note's own directory if one exists.
+///    - Otherwise matches by basename only when that basename is unique across all
+///      attachments in the vault (Obsidian's "Shortest path when possible" rule).
+fn resolve_attachment_link<'a>(
+    note_rel_dir: &str,
+    link: &str,
+    all_attachments: &'a HashSet<String>,
+    unique_basenames: &'a HashMap<String, Option<String>>,
+) -> Option<&'a str> {
+    if link.contains('/') {
+        if let Some(rooted) = link.strip_prefix('/') {
+            let cand = join_vault_rel("", rooted)?;
+            return all_attachments.get(&cand).map(|s| s.as_str());
+        }
+        if link.starts_with("./") || link.starts_with("../") {
+            let cand = join_vault_rel(note_rel_dir, link)?;
+            return all_attachments.get(&cand).map(|s| s.as_str());
+        }
+        if let Some(rel_cand) = join_vault_rel(note_rel_dir, link) {
+            if let Some(found) = all_attachments.get(&rel_cand) {
+                return Some(found.as_str());
+            }
+        }
+        if !note_rel_dir.is_empty() {
+            if let Some(root_cand) = join_vault_rel("", link) {
+                if let Some(found) = all_attachments.get(&root_cand) {
+                    return Some(found.as_str());
+                }
+            }
+        }
+        None
+    } else {
+        if let Some(sibling) = join_vault_rel(note_rel_dir, link) {
+            if let Some(found) = all_attachments.get(&sibling) {
+                return Some(found.as_str());
+            }
+        }
+        let lower_name = link.to_lowercase();
+        match unique_basenames.get(&lower_name) {
+            Some(Some(unique_rel)) => Some(unique_rel.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// Widens a sparse result set by grepping note bodies and extracted attachment text.
 ///
 /// `results` is extended in place, so the title and tag hits the caller already collected
@@ -176,6 +275,8 @@ pub fn execute_fallback_search(
             .iter()
             .map(|res| (res.path.as_str(), res))
             .collect();
+
+        let mut seen_paths: HashSet<String> = results.iter().map(|res| res.path.clone()).collect();
 
         // Read the extracted attachment text only here: no other code path needs it, and
         // it is the largest file in the cache directory
@@ -206,7 +307,7 @@ pub fn execute_fallback_search(
 
             for content_match in found {
                 // Never list a note twice: title/tag hits keep their original entry
-                if results.iter().any(|res| res.path == content_match.path) {
+                if seen_paths.contains(&content_match.path) {
                     continue;
                 }
 
@@ -251,37 +352,77 @@ pub fn execute_fallback_search(
                 };
 
                 file_result.snippet = Some(content_match.snippet);
+                seen_paths.insert(file_result.path.clone());
                 results.push(file_result);
             }
         }
 
-        // An attachment is never shown on its own: only the Markdown note that embeds it
-        // becomes an item, so Alfred always opens something editable. This covers image
-        // embeds and PDF attachments alike, since both are indexed the same way.
+        // Collect only the attachments whose extracted text matches every query term,
+        // keyed by lowercase vault-relative path -> `(is_pdf, snippet)`.
+        let mut matched_by_rel: HashMap<String, (bool, String)> = HashMap::new();
         for (image_path, ocr_result) in &ocr_cache {
             let lower_text = ocr_result.text.to_lowercase();
             if !title_terms.iter().all(|term| lower_text.contains(*term)) {
                 continue;
             }
 
-            let image_name = Path::new(image_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(image_path);
+            let rel_path = match vault_rel_lower(vault_dir, Path::new(image_path)) {
+                Some(rel) if !rel.is_empty() => rel,
+                _ => continue,
+            };
 
-            // Find the first line that actually contains one of the query terms to show as the snippet
+            // Prefer a line containing every query term so multi-word hits earn Tier 2
+            // ranking; fall back to the first line containing any query term
             let matching_line = ocr_result
                 .text
                 .lines()
                 .map(|l| l.trim())
                 .find(|l| {
                     let lower_line = l.to_lowercase();
-                    title_terms.iter().any(|term| lower_line.contains(term))
+                    title_terms.iter().all(|term| lower_line.contains(*term))
+                })
+                .or_else(|| {
+                    ocr_result
+                        .text
+                        .lines()
+                        .map(|l| l.trim())
+                        .find(|l| {
+                            let lower_line = l.to_lowercase();
+                            title_terms.iter().any(|term| lower_line.contains(*term))
+                        })
                 })
                 .unwrap_or("");
 
-            for &cached_file in file_lookup.values() {
-                if !cached_file.links.iter().any(|l| l.eq_ignore_ascii_case(image_name)) {
+            let is_pdf = Path::new(image_path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                .unwrap_or(false);
+
+            matched_by_rel.insert(rel_path, (is_pdf, build_snippet(matching_line)));
+        }
+
+        // An attachment is never shown on its own: only the Markdown note that embeds it
+        // becomes an item, so Alfred always opens something editable.
+        if !matched_by_rel.is_empty() {
+            let mut all_attachments: HashSet<String> = HashSet::with_capacity(ocr_cache.len());
+            let mut unique_basenames: HashMap<String, Option<String>> = HashMap::new();
+            for image_path in ocr_cache.keys() {
+                if let Some(rel) = vault_rel_lower(vault_dir, Path::new(image_path)) {
+                    if !rel.is_empty() {
+                        if let Some(base) = Path::new(&rel).file_name().and_then(|n| n.to_str()) {
+                            unique_basenames
+                                .entry(base.to_string())
+                                .and_modify(|slot| *slot = None)
+                                .or_insert_with(|| Some(rel.clone()));
+                        }
+                        all_attachments.insert(rel);
+                    }
+                }
+            }
+
+            for cached_file in all_files {
+                if cached_file.links.is_empty() || seen_paths.contains(&cached_file.path) {
                     continue;
                 }
 
@@ -294,21 +435,28 @@ pub fn execute_fallback_search(
                     continue;
                 }
 
-                if results.iter().any(|res| res.path == cached_file.path) {
-                    continue;
+                let note_rel_dir = Path::new(&cached_file.path)
+                    .parent()
+                    .and_then(|parent| vault_rel_lower(vault_dir, parent))
+                    .unwrap_or_default();
+
+                for link in &cached_file.links {
+                    if let Some(target_rel) = resolve_attachment_link(
+                        &note_rel_dir,
+                        link,
+                        &all_attachments,
+                        &unique_basenames,
+                    ) {
+                        if let Some((is_pdf, snippet_text)) = matched_by_rel.get(target_rel) {
+                            let icon = if *is_pdf { "📄" } else { "🖼️" };
+                            let mut file_result = cached_file.clone();
+                            file_result.snippet = Some(format!("{} {}", icon, snippet_text));
+                            seen_paths.insert(file_result.path.clone());
+                            results.push(file_result);
+                            break;
+                        }
+                    }
                 }
-
-                // A PDF reads as a document, anything else as an image
-                let is_pdf = Path::new(image_path)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("pdf"))
-                    .unwrap_or(false);
-                let icon = if is_pdf { "📄" } else { "🖼️" };
-
-                let mut file_result = cached_file.clone();
-                file_result.snippet = Some(format!("{} {}", icon, build_snippet(matching_line)));
-                results.push(file_result);
             }
         }
     }
