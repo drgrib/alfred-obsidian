@@ -556,7 +556,40 @@
 		</dict>
 	</array>
 	<key>readme</key>
-	<string></string>
+	<string># Obsidian Workflow
+
+High-speed note searching and creation for [Obsidian](https://obsidian.md/).
+
+## Setup
+
+1. Install and enable the [Advanced URI](https://github.com/Vinzent03/obsidian-advanced-uri) community plugin in **every vault** you use.
+2. Set your vault path in **Vault Map** on the left (`default: ~/path/to/vault`).
+3. Authorize the binary on first run (right-click workflow, **Open in Terminal**):
+
+```
+xattr -rd com.apple.quarantine .
+```
+
+## Multi-Vault Example
+
+Add `#tag: path` lines under `default:` in **Vault Map**:
+
+```
+default: ~/Drive/Obsidian/Personal
+#work: ~/WorkDrive/Obsidian/Work
+```
+
+Searches span all vaults automatically, and `#work` routes new notes to that vault.
+
+## Usage
+
+* `obsidiancreatesearch`: Search existing notes or create a new one from a single prompt
+* `obsidiansearch`: Search titles, body text, `"exact phrases"`, `#tags`, images, and PDFs (leave empty for recent notes)
+* `obsidiancreate`: Create a note (`Folder/Title` for subfolders, `#tags` in any order)
+* `⌘ + Return`: Open note in a pop-out window
+* `⇧ + Return`: Paste `[[Note Title]]` wikilink into active app
+
+Full documentation: [github.com/drgrib/alfred-obsidian](https://github.com/drgrib/alfred-obsidian)</string>
 	<key>uidata</key>
 	<dict>
 		<key>27E8D917-B806-49AB-96EA-DB3AD1961A13</key>
