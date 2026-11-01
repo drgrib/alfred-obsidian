@@ -78,7 +78,7 @@ default: ~/Drive/Obsidian/Personal
 
 Searches automatically span all configured vaults, and including `#work` when creating a note routes it to that vault. If you use this feature, each of your search results will be prefixed with the basename of the folder of the vault the note originates from. As you can see in my examples, my "Personal" vault is being shown as the origin. If you don't use this feature and only have one vault, there will be no such prefix.
 
-<img src="screenshots/multi-vault.png" width="500" alt="Configuration">
+<img src="screenshots/multi-vault2.png" width="500" alt="Configuration">
 
 ### More Accurate, Slower OCR
 
