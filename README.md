@@ -17,7 +17,7 @@ The first time you run the workflow, it indexes your vault. This process is very
 
 ## Search
 
-`obsidiansearch` (or assign a hotkey, as I have in the examples; I use alt+o)
+`obsidiansearch` (or assign a hotkey, as I have in some examples; I personally use _alt+o_ for `obsidiancreatesearch`)
 
 ### Recent Notes
 
@@ -33,21 +33,13 @@ Type to search note titles, body text, and text inside embedded images (`🖼️
 
 ### Tag Search
 
-Type `#` to autocomplete tags sorted by recency. Combine multiple `#tags` and search terms in any order to narrow results.
+Type `#` to autocomplete tags sorted by recency.
 
 ![Tag Autocomplete](screenshots/tag-autocomplete.png)
 
+Combine multiple `#tags` and search terms in any order to narrow results.
+
 ![Tag Search](screenshots/tag-search.png)
-
-### Open in Pop-Out Window
-
-Hold `Command` (`⌘`) when selecting a note to open it in a separate pop-out window instead of Obsidian's main window.
-
-### Link Pasting
-
-Hold `Shift` (`⇧`) when selecting a note to paste a `[[Note Title]]` wikilink into your active document.
-
-![Link Pasting](screenshots/link-pasting.png)
 
 ## New Notes
 
@@ -65,18 +57,34 @@ Searches existing notes and places a **Create** option at the third result (or a
 
 ![Create/Search](screenshots/create-search.png)
 
-## Multi-Vault
+### Open in Pop-Out Window
+
+Hold `Command` (`⌘`) when selecting a note to open it in a separate pop-out window instead of Obsidian's main window.
+
+### Link Pasting
+
+Hold `Shift` (`⇧`) when selecting a note to paste a `[[Note Title]]` wikilink into your active document.
+
+## Configuration
+
+![Configuration](screenshots/configuration.png)
+
+### Multi-Vault
 
 Add `#tag: path` lines under `default:` in **Vault Map** to use multiple vaults. For example:
 
-```yaml
+```
 default: ~/Drive/Obsidian/Personal
 #work: ~/WorkDrive/Obsidian/Work
 ```
 
 Searches automatically span all configured vaults, and including `#work` when creating a note routes it to that vault.
 
-![Multi-Vault](screenshots/multi-vault.png)
+### OCR
+
+Optional settings in **Configure Workflow...** for attachment indexing:
+- **More Accurate, Slower OCR**: Uses macOS Vision's accurate recognizer instead of fast mode. To re-index existing attachments afterward, delete `~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.drgrib.obsidian`. You are extremely unlikely to need this but it is available if, for example, your notes have images with very small text that isn't being found.
+- **OCR Workers**: Parallel OCR worker count (blank = automatic). I've never needed to change this but if you have a lot of images in your notes, maybe you would need to up the count. [Jetski: fill in example numbers to start with here]
 
 ## Authorize Executable
 
@@ -84,12 +92,6 @@ Because this free open-source workflow is not signed with a paid Apple Developer
 
 1. In **Alfred Preferences → Workflows**, right-click **Obsidian** and click **Open in Terminal**.
 2. Run `xattr -rd com.apple.quarantine .`
-
-#### OCR Configuration
-
-Optional settings in **Configure Workflow...** for attachment indexing:
-- **More Accurate, Slower OCR**: Uses macOS Vision's accurate recognizer instead of fast mode. To re-index existing attachments afterward, delete `~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.drgrib.obsidian`.
-- **OCR Workers**: Parallel OCR worker count (blank = automatic).
 
 ## Background
 
@@ -104,10 +106,5 @@ Bear relies on iCloud sync (often blocked on corporate machines) and stores note
 ### Differences from `alfred-bear`
 
 - **Rust + local cache**: Vault scans only run on an empty query; every typed character reads strictly from cache.
-- **Main window by default**: `Enter` opens notes in Obsidian's main window to avoid window clutter (`⌘` opens a pop-out window).
-- **Built-in image & PDF search**: Indexes text in embedded images and PDFs locally.
+- **Main window by default**: `Enter` opens notes in Obsidian's main window due to Obsidian's cleaner and also mandatory open main window (`⌘` opens a pop-out window, but it isn't as useful or necessary as it was for me in Bear).
 - **No Table of Contents pasting**: Omitted due to low usage.
-
-## License
-
-[MIT](LICENSE)

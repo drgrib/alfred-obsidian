@@ -10,7 +10,121 @@ use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::types::{ContentMatch, FileResult, OcrCache, MAX_CONTENT_MATCHES};
+use crate::types::{ContentMatch, FileResult, OcrCache, QueryTerm, MAX_CONTENT_MATCHES};
+
+fn is_quote_char(c: char) -> bool {
+    matches!(c, '"' | '\u{201C}' | '\u{201D}')
+}
+
+pub struct ParsedQuery {
+    pub search_terms: Vec<QueryTerm>,
+    pub tag_terms: Vec<String>,
+    pub raw_tag_tokens: Vec<String>,
+    pub create_title: String,
+    /// `(prefix_before_hash, partial_tag_without_hash)` when the cursor sits on an
+    /// unquoted `#tag` at the very end of `raw_query`.
+    pub autocompleting_tag: Option<(String, String)>,
+}
+
+/// Splits the raw query into unquoted words, `"..."` exact phrases, and `#tag` filters.
+///
+/// Unclosed quotes still match as an exact phrase while the user is mid-typing, and `#`
+/// inside quotes stays literal text rather than triggering tag autocomplete.
+pub fn parse_query(raw_query: &str) -> ParsedQuery {
+    let mut search_terms = Vec::new();
+    let mut tag_terms = Vec::new();
+    let mut raw_tag_tokens = Vec::new();
+    let mut title_parts = Vec::new();
+    let mut autocompleting_tag = None;
+
+    let mut chars = raw_query.char_indices().peekable();
+    while let Some(&(_, ch)) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+
+        if is_quote_char(ch) {
+            chars.next();
+            let start = chars.peek().map(|&(idx, _)| idx).unwrap_or(raw_query.len());
+            let mut end = raw_query.len();
+            while let Some((idx, c)) = chars.next() {
+                if is_quote_char(c) {
+                    end = idx;
+                    break;
+                }
+            }
+            let inner = &raw_query[start..end];
+            let normalized_orig: String = inner.split_whitespace().collect::<Vec<&str>>().join(" ");
+            if !normalized_orig.is_empty() {
+                search_terms.push(QueryTerm {
+                    text: normalized_orig.to_lowercase(),
+                    quoted: true,
+                });
+                title_parts.push(normalized_orig);
+            }
+        } else {
+            let (start, _) = chars.next().unwrap();
+            let mut end = raw_query.len();
+            while let Some(&(idx, c)) = chars.peek() {
+                if c.is_whitespace() || is_quote_char(c) {
+                    end = idx;
+                    break;
+                }
+                chars.next();
+            }
+            let token = &raw_query[start..end];
+            let at_eof = end == raw_query.len();
+
+            if token.starts_with('#') {
+                let lower_token = token.to_lowercase();
+                let clean = lower_token.trim_start_matches('#').to_string();
+                raw_tag_tokens.push(lower_token);
+                if at_eof {
+                    let raw_prefix = &raw_query[..start];
+                    let prefix =
+                        if !raw_prefix.is_empty() && !raw_prefix.ends_with(char::is_whitespace) {
+                            format!("{} ", raw_prefix)
+                        } else {
+                            raw_prefix.to_string()
+                        };
+                    autocompleting_tag = Some((prefix, clean));
+                } else if !clean.is_empty() {
+                    tag_terms.push(clean);
+                }
+            } else {
+                search_terms.push(QueryTerm {
+                    text: token.to_lowercase(),
+                    quoted: false,
+                });
+                title_parts.push(token.to_string());
+            }
+        }
+    }
+
+    ParsedQuery {
+        search_terms,
+        tag_terms,
+        raw_tag_tokens,
+        create_title: title_parts.join(" "),
+        autocompleting_tag,
+    }
+}
+
+/// Checks whether a note's tag satisfies a `#tag` query term using Obsidian's nested tag
+/// hierarchy: `#games` (or `#games/`) matches both `#games` and any subtag like
+/// `#games/nintendo`, while `#game` does not match `#games/nintendo`.
+pub fn tag_matches(note_tag: &str, query_tag: &str) -> bool {
+    let note = note_tag.trim_matches('/');
+    let query = query_tag.trim_matches('/');
+    if query.is_empty() {
+        return false;
+    }
+    note == query
+        || note
+            .strip_prefix(query)
+            .map_or(false, |rest| rest.starts_with('/'))
+}
 
 /// Escapes regex metacharacters so a query can be matched as a literal string.
 pub fn escape_regex(input: &str) -> String {
@@ -37,18 +151,30 @@ pub fn build_snippet(line: &str) -> String {
 
 /// Builds one case-insensitive matcher per search term.
 ///
-/// Each term is compiled as a regex first so patterns like `foo.*bar` work, but
-/// most terms are plain words that may contain characters which are invalid regex
-/// (e.g. `c++`), so those fall back to a literal, escaped search. A file only
-/// counts as a content match when every term matches somewhere inside it.
-pub fn build_term_matchers(terms: &[&str]) -> Vec<RegexMatcher> {
+/// Quoted phrases are always matched literally (with flexible whitespace between words),
+/// while unquoted terms try regex compilation first so patterns like `foo.*bar` work and
+/// fall back to an escaped literal when they contain characters like `c++`.
+pub fn build_term_matchers(terms: &[QueryTerm]) -> Vec<RegexMatcher> {
     terms
         .iter()
-        .filter(|t| !t.trim().is_empty())
+        .filter(|t| !t.text.trim().is_empty())
         .filter_map(|t| {
             let mut builder = RegexMatcherBuilder::new();
             builder.case_insensitive(true);
-            builder.build(t).or_else(|_| builder.build(&escape_regex(t))).ok()
+            if t.quoted {
+                let pattern = t
+                    .text
+                    .split_whitespace()
+                    .map(escape_regex)
+                    .collect::<Vec<String>>()
+                    .join(r"\s+");
+                builder.build(&pattern).ok()
+            } else {
+                builder
+                    .build(&t.text)
+                    .or_else(|_| builder.build(&escape_regex(&t.text)))
+                    .ok()
+            }
         })
         .collect()
 }
@@ -254,6 +380,60 @@ fn resolve_attachment_link<'a>(
     }
 }
 
+/// Checks whether an attachment's extracted text satisfies every search term.
+///
+/// Unquoted words match anywhere in the text. Quoted phrases must appear contiguously in
+/// order; whitespace runs (including newlines between Vision OCR boxes or wrapped PDF
+/// lines) are collapsed to single spaces so a phrase split across two visual lines still
+/// matches.
+fn ocr_text_matches_all(ocr_text: &str, terms: &[QueryTerm]) -> bool {
+    let lower_text = ocr_text.to_lowercase();
+
+    for term in terms {
+        if term.quoted {
+            if !term.text.split_whitespace().all(|word| lower_text.contains(word)) {
+                return false;
+            }
+        } else if !lower_text.contains(&term.text) {
+            return false;
+        }
+    }
+
+    let mut collapsed_lower: Option<String> = None;
+    for term in terms {
+        if term.quoted && !lower_text.contains(&term.text) {
+            let collapsed = collapsed_lower.get_or_insert_with(|| {
+                lower_text.split_whitespace().collect::<Vec<&str>>().join(" ")
+            });
+            if !collapsed.contains(&term.text) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Extracts a readable snippet from whitespace-collapsed text when a quoted phrase
+/// matched across a line wrap rather than on a single raw line.
+fn snippet_from_collapsed(text: &str, needle_lower: &str) -> String {
+    let collapsed: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+    if collapsed.chars().count() <= 120 {
+        return build_snippet(&collapsed);
+    }
+    let lower = collapsed.to_lowercase();
+    if let Some(byte_pos) = lower.find(needle_lower) {
+        let char_pos = lower[..byte_pos].chars().count();
+        let start_char = char_pos.saturating_sub(30);
+        let window: String = collapsed.chars().skip(start_char).take(120).collect();
+        if start_char > 0 {
+            return build_snippet(&format!("…{}", window.trim_start()));
+        }
+        return build_snippet(&window);
+    }
+    build_snippet(&collapsed)
+}
+
 /// Widens a sparse result set by grepping note bodies and extracted attachment text.
 ///
 /// `results` is extended in place, so the title and tag hits the caller already collected
@@ -261,13 +441,16 @@ fn resolve_attachment_link<'a>(
 /// the file; terms under two characters are too noisy to search for.
 pub fn execute_fallback_search(
     vault_dir: &Path,
-    title_terms: &[&str],
+    title_terms: &[QueryTerm],
     tag_terms: &[&str],
     all_files: &[FileResult],
     results: &mut Vec<FileResult>,
     ocr_cache_path: &Path,
 ) {
-    if results.len() < 50 && !title_terms.is_empty() && title_terms.iter().all(|t| t.len() >= 2) {
+    if results.len() < 50
+        && !title_terms.is_empty()
+        && title_terms.iter().all(|t| t.text.len() >= 2)
+    {
         // Keyed by borrowed path and holding a borrowed file, so building the lookup costs
         // no clones at all. It spans the whole vault, which is what lets a content or
         // attachment hit resolve for a note the title/tag filter dropped.
@@ -320,7 +503,7 @@ pub fn execute_fallback_search(
                         .map(|cached_file| {
                             tag_terms
                                 .iter()
-                                .all(|term| cached_file.tags.iter().any(|t| t == *term))
+                                .all(|term| cached_file.tags.iter().any(|t| tag_matches(t, term)))
                         })
                         .unwrap_or(false);
 
@@ -361,8 +544,7 @@ pub fn execute_fallback_search(
         // keyed by lowercase vault-relative path -> `(is_pdf, snippet)`.
         let mut matched_by_rel: HashMap<String, (bool, String)> = HashMap::new();
         for (image_path, ocr_result) in &ocr_cache {
-            let lower_text = ocr_result.text.to_lowercase();
-            if !title_terms.iter().all(|term| lower_text.contains(*term)) {
+            if !ocr_text_matches_all(&ocr_result.text, title_terms) {
                 continue;
             }
 
@@ -371,27 +553,34 @@ pub fn execute_fallback_search(
                 _ => continue,
             };
 
-            // Prefer a line containing every query term so multi-word hits earn Tier 2
-            // ranking; fall back to the first line containing any query term
-            let matching_line = ocr_result
+            // Prefer a single line containing every query term; if a quoted phrase
+            // matched across a line wrap, build the snippet from the collapsed text;
+            // otherwise fall back to the first line containing any query term.
+            let single_line = ocr_result
                 .text
                 .lines()
                 .map(|l| l.trim())
                 .find(|l| {
                     let lower_line = l.to_lowercase();
-                    title_terms.iter().all(|term| lower_line.contains(*term))
-                })
-                .or_else(|| {
-                    ocr_result
-                        .text
-                        .lines()
-                        .map(|l| l.trim())
-                        .find(|l| {
-                            let lower_line = l.to_lowercase();
-                            title_terms.iter().any(|term| lower_line.contains(*term))
-                        })
-                })
-                .unwrap_or("");
+                    title_terms.iter().all(|term| lower_line.contains(&term.text))
+                });
+
+            let snippet = if let Some(line) = single_line {
+                build_snippet(line)
+            } else if let Some(phrase) = title_terms.iter().find(|t| t.quoted && t.text.contains(' ')) {
+                snippet_from_collapsed(&ocr_result.text, &phrase.text)
+            } else {
+                let any_line = ocr_result
+                    .text
+                    .lines()
+                    .map(|l| l.trim())
+                    .find(|l| {
+                        let lower_line = l.to_lowercase();
+                        title_terms.iter().any(|term| lower_line.contains(&term.text))
+                    })
+                    .unwrap_or("");
+                build_snippet(any_line)
+            };
 
             let is_pdf = Path::new(image_path)
                 .extension()
@@ -399,7 +588,7 @@ pub fn execute_fallback_search(
                 .map(|ext| ext.eq_ignore_ascii_case("pdf"))
                 .unwrap_or(false);
 
-            matched_by_rel.insert(rel_path, (is_pdf, build_snippet(matching_line)));
+            matched_by_rel.insert(rel_path, (is_pdf, snippet));
         }
 
         // An attachment is never shown on its own: only the Markdown note that embeds it
@@ -430,7 +619,7 @@ pub fn execute_fallback_search(
                 if !tag_terms.is_empty()
                     && !tag_terms
                         .iter()
-                        .all(|term| cached_file.tags.iter().any(|t| t == *term))
+                        .all(|term| cached_file.tags.iter().any(|t| tag_matches(t, term)))
                 {
                     continue;
                 }

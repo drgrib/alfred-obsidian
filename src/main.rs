@@ -78,19 +78,16 @@ fn main() {
     let is_create_only = mode == "create";
     let raw_query = args.get(2).map(|s| s.as_str()).unwrap_or("");
     let query = raw_query.trim_start();
-    let lower_query = query.to_lowercase();
-    let all_terms: Vec<&str> = lower_query.split_whitespace().collect();
+    let parsed = parse_query(raw_query);
 
     // Every search spans every configured vault. The first tag that names a vault
     // (exactly, or as the parent of a nested tag such as `#corp/project`) decides only
     // where a new note is created.
     let mut target_key = "default";
-    for term in &all_terms {
-        if term.starts_with('#') {
-            if let Some(key) = route_key(term, &vault_map) {
-                target_key = key;
-                break;
-            }
+    for term in &parsed.raw_tag_tokens {
+        if let Some(key) = route_key(term, &vault_map) {
+            target_key = key;
+            break;
         }
     }
 
@@ -244,39 +241,31 @@ fn main() {
             .entry(key.trim_start_matches('#').to_lowercase())
             .or_insert(SystemTime::now());
     }
-    if let Some(output) = handle_tag_autocomplete(raw_query, &all_terms, &tag_recency) {
+    let auto_ref = parsed
+        .autocompleting_tag
+        .as_ref()
+        .map(|(prefix, partial)| (prefix.as_str(), partial.as_str()));
+    if let Some(output) = handle_tag_autocomplete(auto_ref, &tag_recency) {
         println!("{}", serde_json::to_string(&output).unwrap());
         return;
     }
 
     // Normal Search Mode
-    let title_terms: Vec<&str> = all_terms.iter()
-        .filter(|t| !t.starts_with('#'))
-        .copied()
-        .collect();
+    let title_terms: &[QueryTerm] = &parsed.search_terms;
 
     // Every typed tag is a real tag, including a routing key such as `#corp-google`:
     // it picks the create vault, is written into the new note's body, and filters the
     // search like any other tag
-    let tag_terms: Vec<&str> = all_terms.iter()
-        .filter(|t| t.starts_with('#'))
-        .map(|t| t.trim_start_matches('#'))
-        .collect();
+    let tag_terms: Vec<&str> = parsed.tag_terms.iter().map(|s| s.as_str()).collect();
 
     let is_empty_search = title_terms.is_empty() && tag_terms.is_empty();
 
     // Resolve the new note's title and check it against the full, un-filtered vault.
-    // Built from `raw_query` rather than `title_terms`, because the latter are lowercased
-    // for search purposes and would destroy the user's original capitalization.
-    // Tag terms are skipped since they define tags, not the note title.
-    let title_string: String = raw_query
-        .split_whitespace()
-        .filter(|term| !term.starts_with('#'))
-        .collect::<Vec<&str>>()
-        .join(" ");
-
-    // Trim whitespace around any slashes so "folder / note" becomes "folder/note"
-    let title_string = title_string
+    // `parsed.create_title` keeps the user's original capitalization while stripping
+    // surrounding search quotes and `#tag` tokens.
+    // Trim whitespace around any slashes so "folder / note" becomes "folder/note".
+    let title_string = parsed
+        .create_title
         .split('/')
         .map(|s| s.trim())
         .collect::<Vec<&str>>()
@@ -314,8 +303,8 @@ fn main() {
                     .iter()
                     .filter(|res| {
                         let lower_title = res.title.to_lowercase();
-                        let matches_title = title_terms.iter().all(|term| lower_title.contains(*term));
-                        let matches_tags = tag_terms.iter().all(|term| res.tags.iter().any(|t| t == *term));
+                        let matches_title = title_terms.iter().all(|term| lower_title.contains(&term.text));
+                        let matches_tags = tag_terms.iter().all(|term| res.tags.iter().any(|t| tag_matches(t, term)));
 
                         matches_title && matches_tags
                     })
@@ -326,7 +315,7 @@ fn main() {
             // Full-text fallback: when title/tag matches are sparse, grep the note bodies
             // so notes that merely mention the query still surface. Every term has to
             // appear somewhere in the file; terms under two characters are too noisy.
-            execute_fallback_search(&vaults[index].dir, &title_terms, &tag_terms, files, &mut vault_results, &vaults[index].ocr_cache_path);
+            execute_fallback_search(&vaults[index].dir, title_terms, &tag_terms, files, &mut vault_results, &vaults[index].ocr_cache_path);
 
             results.extend(vault_results.into_iter().map(|res| (index, res)));
         }
@@ -334,7 +323,11 @@ fn main() {
 
     // Rank matches so exact title hits beat loose term hits, which in turn beat
     // content hits. Ties fall back to the most recently modified note.
-    let exact_query = title_terms.join(" ").to_lowercase();
+    let exact_query: String = title_terms
+        .iter()
+        .map(|t| t.text.as_str())
+        .collect::<Vec<&str>>()
+        .join(" ");
 
     let rank_result = |res: &FileResult| -> u8 {
         let lower_title = res.title.to_lowercase();
@@ -343,7 +336,7 @@ fn main() {
         let title_has_all_terms = !title_terms.is_empty()
             && title_terms
                 .iter()
-                .all(|term| lower_title.contains(*term));
+                .all(|term| lower_title.contains(&term.text));
 
         match (res.snippet.is_some(), title_has_exact, title_has_all_terms) {
             // Tier 1: the title contains the whole query
@@ -392,7 +385,7 @@ fn main() {
                 std::slice::from_ref(res),
                 &vaults[*index].dir,
                 &targets[*index],
-                &title_terms,
+                title_terms,
                 has_multiple_vaults,
             ));
         }
@@ -425,8 +418,17 @@ fn main() {
                     .set_valid(false)
             );
         } else {
-            let mut all_search_terms = title_terms;
-            all_search_terms.extend(tag_terms.iter().map(|t| *t));
+            let mut all_search_terms: Vec<String> = title_terms
+                .iter()
+                .map(|t| {
+                    if t.quoted {
+                        format!("\"{}\"", t.text)
+                    } else {
+                        t.text.clone()
+                    }
+                })
+                .collect();
+            all_search_terms.extend(tag_terms.iter().map(|t| format!("#{}", t)));
             items.push(
                 Item::new("No matches found")
                     .set_subtitle(format!("Searched {} for '{}'", scope, all_search_terms.join(" ")))

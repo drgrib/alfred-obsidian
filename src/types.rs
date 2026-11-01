@@ -104,6 +104,13 @@ pub struct ContentMatch {
     pub snippet: String,
 }
 
+/// One non-tag search token: either an unquoted word or a `"..."` exact phrase.
+#[derive(Clone, Debug)]
+pub struct QueryTerm {
+    pub text: String,
+    pub quoted: bool,
+}
+
 /// Bumped whenever the note parser changes what it extracts. A cache written by an
 /// older parser is discarded on load, so every note is re-read instead of keeping
 /// stale tags until its modification time happens to change.

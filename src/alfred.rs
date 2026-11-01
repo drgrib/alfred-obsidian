@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::obsidian::VaultTarget;
-use crate::types::{AlfredOutput, FileResult};
+use crate::types::{AlfredOutput, FileResult, QueryTerm};
 
 pub fn url_encode(input: &str) -> String {
     let mut encoded = String::new();
@@ -107,7 +107,7 @@ pub fn assemble_alfred_items(
     results: &[FileResult],
     vault_dir: &Path,
     target: &VaultTarget,
-    title_terms: &[&str],
+    title_terms: &[QueryTerm],
     has_multiple_vaults: bool,
 ) -> Vec<Item> {
     let vault_name = target.label.as_str();
@@ -145,8 +145,10 @@ pub fn assemble_alfred_items(
         // When the title itself explains the match, the note's tags are more
         // useful than the matched line; otherwise the snippet explains the hit
         let lower_title = res.title.to_lowercase();
-        let title_matches_all_terms =
-            !title_terms.is_empty() && title_terms.iter().all(|term| lower_title.contains(term));
+        let title_matches_all_terms = !title_terms.is_empty()
+            && title_terms
+                .iter()
+                .all(|term| lower_title.contains(&term.text));
 
         let subtitle = if !title_matches_all_terms && res.snippet.is_some() {
             let snippet = res.snippet.as_ref().unwrap();
@@ -227,43 +229,32 @@ pub fn format_eta(secs: u64) -> String {
     }
 }
 
-/// Builds the tag suggestion list while the user is typing a `#tag`.
+/// Builds the tag suggestion list while the user is typing an unquoted `#tag`.
 ///
-/// Returns `None` the moment the cursor is not sitting on a partial tag, so the caller
-/// falls through to the normal search path instead of showing suggestions.
+/// Returns `None` when the cursor is not sitting on a partial tag, so the caller falls
+/// through to the normal search path instead of showing suggestions.
 pub fn handle_tag_autocomplete(
-    raw_query: &str,
-    all_terms: &[&str],
+    autocompleting: Option<(&str, &str)>,
     tag_recency: &HashMap<String, SystemTime>,
 ) -> Option<AlfredOutput> {
-    let ends_with_space = raw_query.ends_with(' ');
-    let last_term = all_terms.last().copied().unwrap_or("");
-    let is_autocompleting_tag = !ends_with_space && last_term.starts_with('#');
-
-    if !is_autocompleting_tag {
-        return None;
-    }
+    let (prefix, partial_tag) = autocompleting?;
 
     let mut items = Vec::new();
 
-    // Tag Autocomplete Mode
-    let partial_tag = last_term.trim_start_matches('#');
-
-    let mut matched_tags: Vec<(&String, &SystemTime)> = tag_recency.iter()
+    let mut matched_tags: Vec<(&String, &SystemTime)> = tag_recency
+        .iter()
         .filter(|(t, _)| t.contains(partial_tag))
         .collect();
 
     matched_tags.sort_by(|a, b| b.1.cmp(a.1));
 
-    let prefix = raw_query.trim_end_matches(|c: char| !c.is_whitespace());
-
     for (tag, modified_time) in matched_tags.into_iter().take(30) {
         let time_ago = format_time_ago(*modified_time);
         items.push(
             Item::new(format!("#{}", tag))
-                .set_subtitle(format!("{}", time_ago))
+                .set_subtitle(time_ago)
                 .set_autocomplete(format!("{}#{} ", prefix, tag))
-                .set_valid(false)
+                .set_valid(false),
         );
     }
 
