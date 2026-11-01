@@ -321,8 +321,9 @@ fn main() {
         }
     }
 
-    // Rank matches so exact title hits beat loose term hits, which in turn beat
-    // content hits. Ties fall back to the most recently modified note.
+    // Rank matches so whole-word hits beat word-prefix hits, which beat interior
+    // subword hits (like "Tea" inside "Steak"), and title hits always beat content hits.
+    // Ties fall back to the most recently modified note.
     let exact_query: String = title_terms
         .iter()
         .map(|t| t.text.as_str())
@@ -330,30 +331,48 @@ fn main() {
         .join(" ");
 
     let rank_result = |res: &FileResult| -> u8 {
-        let lower_title = res.title.to_lowercase();
-        let title_has_exact =
-            !exact_query.is_empty() && (lower_title == exact_query || lower_title.contains(&exact_query));
-        let title_has_all_terms = !title_terms.is_empty()
-            && title_terms
-                .iter()
-                .all(|term| lower_title.contains(&term.text));
-
-        match (res.snippet.is_some(), title_has_exact, title_has_all_terms) {
-            // Tier 1: the title contains the whole query
-            (false, true, _) => 0,
-            // Tier 2: the title contains every term separately
-            (false, _, true) => 1,
-            // Tier 3 / 4: a content hit, ranked by whether the matched line holds
-            // the whole query or just one of the terms
-            (true, _, _) => {
-                let snippet = res.snippet.as_ref().unwrap().to_lowercase();
-                if !exact_query.is_empty() && snippet.contains(&exact_query) {
-                    2
-                } else {
-                    3
-                }
+        if let Some(raw_snippet) = &res.snippet {
+            let snippet = raw_snippet.to_lowercase();
+            if !exact_query.is_empty() && contains_whole_word(&snippet, &exact_query) {
+                7
+            } else if !title_terms.is_empty()
+                && title_terms
+                    .iter()
+                    .all(|term| contains_whole_word(&snippet, &term.text))
+            {
+                8
+            } else if !exact_query.is_empty() && contains_word_prefix(&snippet, &exact_query) {
+                9
+            } else if !exact_query.is_empty() && snippet.contains(&exact_query) {
+                10
+            } else {
+                11
             }
-            _ => 4,
+        } else {
+            let lower_title = res.title.to_lowercase();
+            if !exact_query.is_empty() && lower_title == exact_query {
+                0
+            } else if !exact_query.is_empty() && contains_whole_word(&lower_title, &exact_query) {
+                1
+            } else if !title_terms.is_empty()
+                && title_terms
+                    .iter()
+                    .all(|term| contains_whole_word(&lower_title, &term.text))
+            {
+                2
+            } else if !exact_query.is_empty() && contains_word_prefix(&lower_title, &exact_query) {
+                3
+            } else if !title_terms.is_empty()
+                && title_terms
+                    .iter()
+                    .all(|term| contains_word_prefix(&lower_title, &term.text))
+            {
+                4
+            } else if !exact_query.is_empty() && lower_title.contains(&exact_query) {
+                5
+            } else {
+                6
+            }
         }
     };
 

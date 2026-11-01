@@ -126,6 +126,47 @@ pub fn tag_matches(note_tag: &str, query_tag: &str) -> bool {
             .map_or(false, |rest| rest.starts_with('/'))
 }
 
+/// True when `needle` appears in `haystack` bounded on both sides by non-alphanumeric
+/// characters (or string edges), so `"tea"` matches `"Peppermint Tea"` and `"Green-Tea"`,
+/// while skipping `"Team"` and `"Steak"`.
+pub fn contains_whole_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    for (idx, _) in haystack.match_indices(needle) {
+        let left_ok = haystack[..idx]
+            .chars()
+            .next_back()
+            .map_or(true, |c| !c.is_alphanumeric());
+        let right_ok = haystack[idx + needle.len()..]
+            .chars()
+            .next()
+            .map_or(true, |c| !c.is_alphanumeric());
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when `needle` starts on a word boundary in `haystack` (such as `"tea"` in
+/// `"Team"` while mid-typing), outranking interior subword matches like `"Steak"`.
+pub fn contains_word_prefix(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    for (idx, _) in haystack.match_indices(needle) {
+        let left_ok = haystack[..idx]
+            .chars()
+            .next_back()
+            .map_or(true, |c| !c.is_alphanumeric());
+        if left_ok {
+            return true;
+        }
+    }
+    false
+}
+
 /// Escapes regex metacharacters so a query can be matched as a literal string.
 pub fn escape_regex(input: &str) -> String {
     let mut escaped = String::with_capacity(input.len());
@@ -553,17 +594,30 @@ pub fn execute_fallback_search(
                 _ => continue,
             };
 
-            // Prefer a single line containing every query term; if a quoted phrase
-            // matched across a line wrap, build the snippet from the collapsed text;
-            // otherwise fall back to the first line containing any query term.
-            let single_line = ocr_result
+            // Prefer a single line containing every query term as whole words, then any
+            // single line containing every term; if a quoted phrase matched across a line
+            // wrap, build the snippet from the collapsed text.
+            let whole_word_line = ocr_result
                 .text
                 .lines()
                 .map(|l| l.trim())
                 .find(|l| {
                     let lower_line = l.to_lowercase();
-                    title_terms.iter().all(|term| lower_line.contains(&term.text))
+                    title_terms
+                        .iter()
+                        .all(|term| contains_whole_word(&lower_line, &term.text))
                 });
+
+            let single_line = whole_word_line.or_else(|| {
+                ocr_result
+                    .text
+                    .lines()
+                    .map(|l| l.trim())
+                    .find(|l| {
+                        let lower_line = l.to_lowercase();
+                        title_terms.iter().all(|term| lower_line.contains(&term.text))
+                    })
+            });
 
             let snippet = if let Some(line) = single_line {
                 build_snippet(line)

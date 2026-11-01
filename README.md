@@ -6,22 +6,26 @@ High-speed note searching and creation for [Obsidian](https://obsidian.md/) usin
 
 1. Install and enable the **[Advanced URI](https://github.com/Vinzent03/obsidian-advanced-uri)** community plugin in Obsidian (**in every vault** you use).
 2. Download `Obsidian.alfredworkflow` from [Releases](https://github.com/drgrib/alfred-obsidian/releases) and double-click it to install.
-3. Set your vault path in **Vault Map**: `default: ~/path/to/vault` (see [Multi-Vault](#multi-vault) for multiple vaults).
+3. Set your vault path in **Vault Map**: `default: ~/path/to/vault` (screenshot below, see [Multi-Vault](#multi-vault) for multiple vaults example).
 4. [Authorize the executable](#authorize-executable).
+
+<img src="screenshots/vault-map.png" width="500" alt="Caching Progress">
 
 ## First-Time Startup Caching
 
-The first time you run the workflow, it indexes your vault. This process is very fast and you can even exit the workflow while it finishes in the background. As an example of how fast it is: my 32,726-file vault (**22,350 notes, 9,848 images, and 528 PDFs**) completed in **1m 11s**. After that, the workflow will rapidly update the index with any new changes every time you open the workflow. And there is no indexing once you start typing. Non-empty queries search quickly from the current cache.
+The first time you run the workflow, it indexes the vaults you added to the **Vault Map**, including running local OCR on all your images and PDFs. This process is very fast and you can even exit the workflow while it finishes in the background. As an example of how fast it is: my 32,726-file vault (**22,350 notes, 9,848 images, and 528 PDFs**) completed in **1m 11s**. After that, the workflow will rapidly update the index with any new changes every time you open the workflow. And there is no indexing once you start typing. Non-empty queries search directly and rapidly from the current cache for minimum latency.
 
 <img src="screenshots/caching.png" width="500" alt="Caching Progress">
 
-## Search
+## Hotkeys
 
-`obsidiansearch` (or assign a hotkey, as I have in some examples; I personally use _alt+o_ for `obsidiancreatesearch`)
+You can assign a hotkey to any of the workflow triggers instead of typing its keyword. This has the nice side effect of directly accessing the workflow interface without the clutter of a keyword, which you will see in some of the examples below. I personally use _alt+o_ for [Create/Search](#createsearch---obsidiancreatesearch), which is the mode I recommend all users at least try for efficiency.
+
+## Search - `obsidiansearch`
 
 ### Recent Notes
 
-Leave the search empty to list your most recent notes with their folder and tags.
+Leave the search empty to list your most recent notes with their folder and tags. This screenshot shows recent notes as accessed via hotkey by either Search or [Create/Search](#createsearch---obsidiancreatesearch), so no keyword is shown. 
 
 <img src="screenshots/recent-notes.png" width="500" alt="Recent Notes">
 
@@ -41,33 +45,27 @@ Combine multiple `#tags` and search terms in any order to narrow results.
 
 <img src="screenshots/tag-search.png" width="500" alt="Tag Search">
 
-## New Notes
-
-`obsidiancreate` (or assign a hotkey)
+## New Notes - `obsidiancreate`
 
 Type a title and optional `#tags` in any order (use `Folder/Title` for subfolders). If a note with that title already exists, it opens the existing note instead of overwriting it.
 
 <img src="screenshots/create-note.png" width="500" alt="New Notes">
 
-## Create/Search
+## Create/Search - `obsidiancreatesearch`
 
-`obsidiancreatesearch` (or assign a hotkey)
-
-Searches existing notes and places a **Create** option at the third result (or at the bottom when fewer than two notes match) so you can search or create from a single prompt.
+Searches existing notes and places a **Create** option as the third result, using the current text in the query for the title as well as adding the current query tags. This is the mode I use exclusively. It is the one-stop shot to initiating everything I do in Obsidian. The most critical user journey it satisfies for me is simultaneously finding a note for me if I've already created it, or immediately creating it for me if I haven't, with the fewest keystrokes.
 
 <img src="screenshots/create-search.png" width="500" alt="Create/Search">
 
-### Open in Pop-Out Window
-
-Hold `Command` (`⌘`) when selecting a note to open it in a separate pop-out window instead of Obsidian's main window.
-
-### Link Pasting
+## Link Pasting
 
 Hold `Shift` (`⇧`) when selecting a note to paste a `[[Note Title]]` wikilink into your active document.
 
-## Configuration
+## Open in Pop-Out Window
 
-<img src="screenshots/configuration.png" width="500" alt="Configuration">
+Hold `Command` (`⌘`) when selecting a note to open it in a separate pop-out window instead of Obsidian's main window.
+
+## Configuration
 
 ### Multi-Vault
 
@@ -78,12 +76,13 @@ default: ~/Drive/Obsidian/Personal
 #work: ~/WorkDrive/Obsidian/Work
 ```
 
-Searches automatically span all configured vaults, and including `#work` when creating a note routes it to that vault.
+Searches automatically span all configured vaults, and including `#work` when creating a note routes it to that vault. If you use this feature, each of your search results will be prefixed with the basename of the folder of the vault the note originates from. As you can see in my examples, my "Personal" vault is being shown as the origin. If you don't use this feature and only have one vault, there will be no such prefix.
 
-### OCR
+<img src="screenshots/multi-vault.png" width="500" alt="Configuration">
 
-Optional setting in **Configure Workflow...** for attachment indexing:
-- **More Accurate, Slower OCR**: Uses macOS Vision's accurate recognizer instead of fast mode. To re-index existing attachments afterward, delete `~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.drgrib.obsidian`. You are extremely unlikely to need this but it is available if, for example, your notes have images with very small text that isn't being found.
+### More Accurate, Slower OCR
+
+Uses macOS Vision's "accurate" recognizer instead of fast mode. To re-index existing attachments afterward, delete `~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.drgrib.obsidian`. You are extremely unlikely to need this but it is available if, for example, your notes have images with very small text that isn't being found.
 
 ## Authorize Executable
 
