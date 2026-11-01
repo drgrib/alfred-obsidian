@@ -9,7 +9,7 @@ High-speed note searching and creation for [Obsidian](https://obsidian.md/) usin
 3. [Authorize the executable](#authorize-executable).
 4. Set your vault path in **Vault Map**: `default: ~/path/to/vault` (see [Multi-Vault](#multi-vault) for multiple vaults example).
 
-<img src="screenshots/vault-map.png" width="500" alt="Caching Progress">
+<img src="screenshots/vault-map.png" width="500" alt="Vault Map">
 
 ## First-Time Startup Caching
 
@@ -25,7 +25,7 @@ You can assign a hotkey to any of the workflow triggers instead of typing its ke
 
 ### Recent Notes
 
-Leave the search empty to list your most recent notes with their folder and tags. This screenshot shows recent notes as accessed via hotkey by either Search or [Create/Search](#createsearch---obsidiancreatesearch), so no keyword is shown. 
+Leave the search empty to list your most recent notes with their folder and tags. This screenshot shows recent notes as accessed via hotkey by either Search or [Create/Search](#createsearch---obsidiancreatesearch), so no keyword is shown.
 
 <img src="screenshots/recent-notes.png" width="500" alt="Recent Notes">
 
@@ -49,11 +49,11 @@ Combine multiple `#tags` and search terms in any order to narrow results.
 
 Type a title and optional `#tags` in any order (use `Folder/Title` for subfolders). If a note with that title already exists, it opens the existing note instead of overwriting it.
 
-<img src="screenshots/create-note2.png" width="500" alt="New Notes">
+<img src="screenshots/create-note3.png" width="500" alt="New Notes">
 
 ## Create/Search - `obsidiancreatesearch`
 
-Searches existing notes and places a **Create** option as the third result, using the current text in the query for the title as well as adding the current query tags. This is the mode I use exclusively. It is the one-stop shot to initiating everything I do in Obsidian. The most critical user journey it satisfies for me is simultaneously finding a note for me if I've already created it, or immediately creating it for me if I haven't, with the fewest keystrokes.
+Searches existing notes and places a **Create** option as the third result, using the current text in the query for the title as well as adding the current query tags. This is the mode I use exclusively. It is the one-stop shop to initiating everything I do in Obsidian. The most critical user journey it satisfies for me is simultaneously finding a note for me if I've already created it, or immediately creating it for me if I haven't, with the fewest keystrokes.
 
 <img src="screenshots/create-search.png" width="500" alt="Create/Search">
 
@@ -78,7 +78,7 @@ default: ~/Drive/Obsidian/Personal
 
 Searches automatically span all configured vaults, and including `#work` when creating a note routes it to that vault. If you use this feature, each of your search results will be prefixed with the basename of the folder of the vault the note originates from. As you can see in my examples, my "Personal" vault is being shown as the origin. If you don't use this feature and only have one vault, there will be no such prefix.
 
-<img src="screenshots/multi-vault2.png" width="500" alt="Configuration">
+<img src="screenshots/multi-vault2.png" width="500" alt="Multi-Vault Configuration">
 
 ### More Accurate, Slower OCR
 
@@ -91,8 +91,8 @@ Because this free open-source workflow is not signed with a paid Apple Developer
 1. In **Alfred Preferences → Workflows**, right-click **Obsidian** and click **Open in Terminal**.
 2. Run `xattr -rd com.apple.quarantine .`
 
-<img src="screenshots/authorize1.png" width="250" alt="Configuration">
-<img src="screenshots/authorize2.png" width="500" alt="Configuration">
+<img src="screenshots/authorize1.png" width="250" alt="Open in Terminal">
+<img src="screenshots/authorize2.png" width="500" alt="Authorize Executable">
 
 ## Background
 
