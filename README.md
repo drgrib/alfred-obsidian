@@ -91,18 +91,21 @@ Because this free open-source workflow is not signed with a paid Apple Developer
 1. In **Alfred Preferences → Workflows**, right-click **Obsidian** and click **Open in Terminal**.
 2. Run `xattr -rd com.apple.quarantine .`
 
+<img src="screenshots/authorize1.png" width="250" alt="Configuration">
+<img src="screenshots/authorize2.png" width="500" alt="Configuration">
+
 ## Background
 
-### Why Move from Bear to Obsidian?
+### Why the Move from Bear to Obsidian?
 
-Bear relies on iCloud sync (often blocked on corporate machines) and stores notes in SQLite rather than plain `.md` files that work cleanly with Git and AI agents.
+Bear relies on iCloud sync (which was blocked by my corporate laptop) and stores notes in SQLite rather than plain `.md` files that work cleanly with Git and AI agents.
 
 ### Why Not Shimmering Obsidian?
 
-[Shimmering Obsidian](https://github.com/chrisgrieser/shimmering-obsidian) is much broader in scope and requires the third-party **Metadata Extractor** plugin (also blocked in some corporate environments), whereas `alfred-obsidian` stays minimal and indexes `.md` files directly.
+[Shimmering Obsidian](https://github.com/chrisgrieser/shimmering-obsidian) is much broader in scope, adding a lot of elements to the user interface that I don't want. Also, frankly, the default user interface just doesn't make sense to me and doesn't interact with Obsidian in the way I find most intuitive. It also requires the third-party **Metadata Extractor** plugin (also blocked by my corporate laptop), whereas `alfred-obsidian` stays minimal and indexes `.md` files directly.
 
 ### Differences from `alfred-bear`
 
-- **Rust + local cache**: Vault scans only run on an empty query; every typed character reads strictly from cache.
+- **Rust + local cache**: Vault scans only run on an empty query; every typed character reads strictly from cache for significantly better performance on typed queries.
 - **Main window by default**: `Enter` opens notes in Obsidian's main window due to Obsidian's cleaner and also mandatory open main window (`⌘` opens a pop-out window, but it isn't as useful or necessary as it was for me in Bear).
 - **No Table of Contents pasting**: Omitted due to low usage.
