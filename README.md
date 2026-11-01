@@ -107,5 +107,5 @@ Bear relies on iCloud sync (which was blocked by my corporate laptop) and stores
 ### Differences from `alfred-bear`
 
 - **Rust + local cache**: Vault scans only run on an empty query; every typed character reads strictly from cache for significantly better performance on typed queries.
-- **Main window by default**: `Enter` opens notes in Obsidian's main window due to Obsidian's cleaner and also mandatory open main window (`⌘` opens a pop-out window, but it isn't as useful or necessary as it was for me in Bear).
+- **Main window by default**: `Enter` opens notes in Obsidian's main window due to Obsidian's cleaner, always-open main window. `⌘` can still open a pop-out window, if desired, but it isn't as useful or necessary as it was for me in Bear.
 - **No Table of Contents pasting**: Omitted due to low usage.
