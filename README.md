@@ -49,7 +49,7 @@ Combine multiple `#tags` and search terms in any order to narrow results.
 
 Type a title and optional `#tags` in any order (use `Folder/Title` for subfolders). If a note with that title already exists, it opens the existing note instead of overwriting it.
 
-<img src="screenshots/create-note.png" width="500" alt="New Notes">
+<img src="screenshots/create-note2.png" width="500" alt="New Notes">
 
 ## Create/Search - `obsidiancreatesearch`
 
