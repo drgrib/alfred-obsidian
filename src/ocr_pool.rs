@@ -32,18 +32,8 @@ pub struct OcrOutcome {
     pub text: String,
 }
 
-/// How many shards to run. `ocr_workers` in the workflow configuration overrides the
-/// default, which is the logical core count capped at `MAX_OCR_WORKERS`.
+/// How many shards to run: the logical core count capped at `MAX_OCR_WORKERS`.
 pub fn ocr_worker_count() -> usize {
-    if let Some(requested) = env::var("ocr_workers")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-    {
-        if requested >= 1 {
-            return requested.min(32);
-        }
-    }
-
     thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(2)

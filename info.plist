@@ -686,27 +686,6 @@
 			<key>variable</key>
 			<string>ocr_accurate</string>
 		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>default</key>
-				<string></string>
-				<key>placeholder</key>
-				<string>auto</string>
-				<key>required</key>
-				<false/>
-				<key>trim</key>
-				<true/>
-			</dict>
-			<key>description</key>
-			<string>Number of parallel OCR processes used while indexing attachments. Leave blank to use one per CPU core (up to 8).</string>
-			<key>label</key>
-			<string>OCR Workers</string>
-			<key>type</key>
-			<string>textfield</string>
-			<key>variable</key>
-			<string>ocr_workers</string>
-		</dict>
 	</array>
 	<key>version</key>
 	<string></string>

@@ -13,7 +13,7 @@ High-speed note searching and creation for [Obsidian](https://obsidian.md/) usin
 
 The first time you run the workflow, it indexes your vault. This process is very fast and you can even exit the workflow while it finishes in the background. As an example of how fast it is: my 32,726-file vault (**22,350 notes, 9,848 images, and 528 PDFs**) completed in **1m 11s**. After that, the workflow will rapidly update the index with any new changes every time you open the workflow. And there is no indexing once you start typing. Non-empty queries search quickly from the current cache.
 
-![Caching Progress](screenshots/caching.png)
+<img src="screenshots/caching.png" width="500" alt="Caching Progress">
 
 ## Search
 
@@ -23,23 +23,23 @@ The first time you run the workflow, it indexes your vault. This process is very
 
 Leave the search empty to list your most recent notes with their folder and tags.
 
-![Recent Notes](screenshots/recent-notes.png)
+<img src="screenshots/recent-notes.png" width="500" alt="Recent Notes">
 
 ### Basic Search
 
 Type to search note titles, body text, and text inside embedded images (`🖼️`) and PDFs (`📄`), prioritizing title matches.
 
-![Basic Search](screenshots/basic-search.png)
+<img src="screenshots/basic-search.png" width="500" alt="Basic Search">
 
 ### Tag Search
 
 Type `#` to autocomplete tags sorted by recency.
 
-![Tag Autocomplete](screenshots/tag-autocomplete.png)
+<img src="screenshots/tag-autocomplete.png" width="500" alt="Tag Autocomplete">
 
 Combine multiple `#tags` and search terms in any order to narrow results.
 
-![Tag Search](screenshots/tag-search.png)
+<img src="screenshots/tag-search.png" width="500" alt="Tag Search">
 
 ## New Notes
 
@@ -47,7 +47,7 @@ Combine multiple `#tags` and search terms in any order to narrow results.
 
 Type a title and optional `#tags` in any order (use `Folder/Title` for subfolders). If a note with that title already exists, it opens the existing note instead of overwriting it.
 
-![New Notes](screenshots/create-note.png)
+<img src="screenshots/create-note.png" width="500" alt="New Notes">
 
 ## Create/Search
 
@@ -55,7 +55,7 @@ Type a title and optional `#tags` in any order (use `Folder/Title` for subfolder
 
 Searches existing notes and places a **Create** option at the third result (or at the bottom when fewer than two notes match) so you can search or create from a single prompt.
 
-![Create/Search](screenshots/create-search.png)
+<img src="screenshots/create-search.png" width="500" alt="Create/Search">
 
 ### Open in Pop-Out Window
 
@@ -67,7 +67,7 @@ Hold `Shift` (`⇧`) when selecting a note to paste a `[[Note Title]]` wikilink 
 
 ## Configuration
 
-![Configuration](screenshots/configuration.png)
+<img src="screenshots/configuration.png" width="500" alt="Configuration">
 
 ### Multi-Vault
 
@@ -82,9 +82,8 @@ Searches automatically span all configured vaults, and including `#work` when cr
 
 ### OCR
 
-Optional settings in **Configure Workflow...** for attachment indexing:
+Optional setting in **Configure Workflow...** for attachment indexing:
 - **More Accurate, Slower OCR**: Uses macOS Vision's accurate recognizer instead of fast mode. To re-index existing attachments afterward, delete `~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.drgrib.obsidian`. You are extremely unlikely to need this but it is available if, for example, your notes have images with very small text that isn't being found.
-- **OCR Workers**: Parallel OCR worker count (blank = automatic). I've never needed to change this but if you have a lot of images in your notes, maybe you would need to up the count. [Jetski: fill in example numbers to start with here]
 
 ## Authorize Executable
 
