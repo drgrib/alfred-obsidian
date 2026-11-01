@@ -92,6 +92,7 @@ Because this free open-source workflow is not signed with a paid Apple Developer
 2. Run `xattr -rd com.apple.quarantine .`
 
 <img src="screenshots/authorize1.png" width="250" alt="Open in Terminal">
+
 <img src="screenshots/authorize2.png" width="500" alt="Authorize Executable">
 
 ## Background
