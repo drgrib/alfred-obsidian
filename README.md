@@ -6,7 +6,7 @@ High-speed note searching and creation for [Obsidian](https://obsidian.md/) usin
 
 1. Install and enable the **[Advanced URI](https://github.com/Vinzent03/obsidian-advanced-uri)** community plugin in Obsidian **in every vault** you use with the workflow.
 2. Download the [latest release](https://github.com/drgrib/alfred-obsidian/releases/latest/download/Obsidian.alfredworkflow) and double-click `Obsidian.alfredworkflow`. Alfred will open the workflow and install it.
-3. Set your vault path in **Vault Map**: `default: ~/path/to/vault` (see [Multi-Vault](#multi-vault) for multiple vaults example).
+3. Set your vault path in **Vault Map**: `default: ~/path/to/vault` (example screenshot below; see [Multi-Vault](#multi-vault) for multiple vaults example).
 4. [Authorize the executable](#authorize-executable).
 
 <img src="screenshots/vault-map.png" width="500" alt="Vault Map">
