@@ -721,7 +721,7 @@ Full documentation: [github.com/drgrib/alfred-obsidian](https://github.com/drgri
 		</dict>
 	</array>
 	<key>version</key>
-	<string></string>
+	<string>1.0.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/drgrib/alfred-obsidian</string>
 </dict>
