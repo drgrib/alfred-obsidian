@@ -13,6 +13,17 @@
 			}
 		},
 		{
+			"label": "Test Release",
+			"type": "shell",
+			"command": "python3 .vscode/release.py --test",
+			"presentation": {
+				"reveal": "always",
+				"panel": "new",
+				"focus": true,
+				"echo": true
+			}
+		},
+		{
 			"label": "Create Release",
 			"type": "shell",
 			"command": "python3 .vscode/release.py",

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Builds, sanitizes, packages, and uploads a draft GitHub release of Obsidian.alfredworkflow."""
+"""Builds, sanitizes, smoke-tests, and packages Obsidian.alfredworkflow (plus --test mode)."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -10,9 +11,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 DEFAULT_VAULT_MAP = "default: ~/Documents/ObsidianVault"
 WORKFLOW_FILENAME = "Obsidian.alfredworkflow"
+TEST_WORKFLOW_FILENAME = "Obsidian-Test.alfredworkflow"
+BUNDLE_ID = "com.drgrib.obsidian"
+TEST_BUNDLE_ID = "com.drgrib.obsidian.test"
 STAGED_FILES = ["LICENSE", "alfred-obsidian", "icon.png", "info.plist"]
 
 
@@ -84,6 +89,134 @@ def build_sanitized_plist(src_plist: Path, dst_plist: Path, prefs_plist: Path, v
 
     dst_plist.write_bytes(serialized)
     print(f"Sanitized staged info.plist (version={version}, cleared {cleared_hotkeys} hotkey(s))")
+
+
+def verify_packaged_workflow(out_path: Path, version: str) -> None:
+    print(f"Running smoke test on packaged {out_path.name}...")
+    with zipfile.ZipFile(out_path, "r") as zf:
+        entries = sorted(zf.namelist())
+        if entries != STAGED_FILES:
+            sys.exit(f"Error: archive entries {entries} do not match expected {STAGED_FILES}")
+
+    unzip_cmd = shutil.which("unzip") or "/usr/bin/unzip"
+    with tempfile.TemporaryDirectory(prefix="alfred-obsidian-smoke-") as tmp:
+        root = Path(tmp)
+        unpacked = root / "workflow"
+        vault_dir = root / "vault"
+        cache_dir = root / "cache"
+        unpacked.mkdir()
+        vault_dir.mkdir()
+        cache_dir.mkdir()
+
+        subprocess.run([unzip_cmd, "-q", str(out_path), "-d", str(unpacked)], check=True)
+
+        bin_path = unpacked / "alfred-obsidian"
+        if not os.access(bin_path, os.X_OK):
+            sys.exit("Error: unpacked alfred-obsidian binary is not executable")
+
+        plist_data = plistlib.loads((unpacked / "info.plist").read_bytes())
+        if plist_data.get("bundleid") != BUNDLE_ID:
+            sys.exit(f"Error: unexpected bundleid {plist_data.get('bundleid')!r} in release archive")
+        if plist_data.get("version") != version:
+            sys.exit(f"Error: unexpected version {plist_data.get('version')!r} in release archive")
+        for obj in plist_data.get("objects", []):
+            if obj.get("type") == "alfred.workflow.trigger.hotkey":
+                cfg = obj.get("config", {})
+                if cfg.get("hotkey") != 0 or cfg.get("hotmod") != 0 or cfg.get("hotstring") != "":
+                    sys.exit("Error: hotkey was not cleared in packaged info.plist")
+        vault_defaults = [
+            item.get("config", {}).get("default")
+            for item in plist_data.get("userconfigurationconfig", [])
+            if item.get("variable") == "vault_map"
+        ]
+        if vault_defaults != [DEFAULT_VAULT_MAP]:
+            sys.exit(f"Error: unexpected vault_map default in packaged info.plist: {vault_defaults}")
+
+        (vault_dir / "Smoke Test Note.md").write_text(
+            "Exact phrase check in body.\n\n#smoke/subtag\n![[icon.png]]\n",
+            encoding="utf-8",
+        )
+        shutil.copyfile(unpacked / "icon.png", vault_dir / "icon.png")
+
+        env = os.environ.copy()
+        env["vault_map"] = f"default: {vault_dir}"
+        env["alfred_workflow_cache"] = str(cache_dir)
+        env["ocr_accurate"] = "0"
+
+        subprocess.run([str(bin_path), "worker", "default"], cwd=unpacked, env=env, check=True)
+        if not (cache_dir / "vault_cache_default.json").exists():
+            sys.exit("Error: worker smoke test did not produce vault_cache_default.json")
+        if not (cache_dir / "ocr_cache_default.json").exists():
+            sys.exit("Error: worker smoke test did not produce ocr_cache_default.json")
+
+        cs_res = subprocess.run(
+            [str(bin_path), "createsearch", '#smoke "exact phrase"'],
+            cwd=unpacked,
+            env=env,
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        cs_titles = [item.get("title") for item in json.loads(cs_res.stdout).get("items", [])]
+        if cs_titles != ["Smoke Test Note", 'Create "exact phrase"']:
+            sys.exit(f"Error: unexpected createsearch smoke test output: {cs_titles}")
+
+        empty_res = subprocess.run(
+            [str(bin_path), "search", ""],
+            cwd=unpacked,
+            env=env,
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        empty_payload = json.loads(empty_res.stdout)
+        empty_titles = [item.get("title") for item in empty_payload.get("items", [])]
+        if empty_payload.get("rerun") is not None or empty_titles != ["Smoke Test Note"]:
+            sys.exit(f"Error: unexpected empty-query smoke test output: {empty_payload}")
+
+    print("Smoke test passed (archive layout, plist sanitization, worker + OCR FFI, and search JSON verified)")
+
+
+def open_isolated_test_workflow(release_workflow: Path) -> None:
+    test_out = release_workflow.parent / TEST_WORKFLOW_FILENAME
+    unzip_cmd = shutil.which("unzip") or "/usr/bin/unzip"
+
+    with tempfile.TemporaryDirectory(prefix="alfred-obsidian-testpkg-") as tmp:
+        stage_dir = Path(tmp)
+        subprocess.run([unzip_cmd, "-q", str(release_workflow), "-d", str(stage_dir)], check=True)
+
+        plist_path = stage_dir / "info.plist"
+        data = plistlib.loads(plist_path.read_bytes())
+        data["bundleid"] = TEST_BUNDLE_ID
+        data["name"] = "Obsidian (Release Test)"
+
+        test_keywords = []
+        for obj in data.get("objects", []):
+            if obj.get("type") == "alfred.workflow.input.scriptfilter":
+                cfg = obj.setdefault("config", {})
+                kw = cfg.get("keyword", "")
+                if kw:
+                    cfg["keyword"] = f"test{kw}"
+                    test_keywords.append(cfg["keyword"])
+                title = cfg.get("title", "")
+                if title:
+                    cfg["title"] = f"[Test] {title}"
+
+        plist_path.write_bytes(plistlib.dumps(data))
+
+        if test_out.exists():
+            test_out.unlink()
+        subprocess.run(
+            ["/usr/bin/zip", "-q", "-X", str(test_out), *STAGED_FILES],
+            cwd=stage_dir,
+            check=True,
+        )
+
+    print(f"\nCreated isolated test workflow: {test_out}")
+    print(f"  Bundle ID : {TEST_BUNDLE_ID} (will NOT touch your live Obsidian workflow or repo)")
+    print(f"  Keywords  : {', '.join(test_keywords)}")
+    print("  Cleanup   : Right-click 'Obsidian (Release Test)' in Alfred Preferences -> Delete...")
+    subprocess.run(["open", str(test_out)], check=False)
 
 
 def check_git_state(repo_dir: Path) -> None:
@@ -165,6 +298,14 @@ def upload_github_draft(repo_dir: Path, out_path: Path, tag: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Build and smoke-test Obsidian.alfredworkflow, then open an isolated Obsidian-Test.alfredworkflow copy in Alfred instead of uploading to GitHub.",
+    )
+    args = parser.parse_args()
+
     repo_dir = Path(__file__).resolve().parent.parent
     version = read_cargo_version(repo_dir / "Cargo.toml")
     tag = f"v{version}"
@@ -226,7 +367,12 @@ def main() -> None:
     size_kb = out_path.stat().st_size / 1024
     print(f"Packaged {out_path} ({size_kb:.0f} KB)")
 
-    upload_github_draft(repo_dir, out_path, tag)
+    verify_packaged_workflow(out_path, version)
+
+    if args.test:
+        open_isolated_test_workflow(out_path)
+    else:
+        upload_github_draft(repo_dir, out_path, tag)
 
 
 if __name__ == "__main__":
