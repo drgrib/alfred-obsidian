@@ -38,9 +38,12 @@ pub fn build_create_item(
         .join(" ");
 
     if is_duplicate {
-        // Open the existing note as-is; omit mode=new and data so tags are never appended
-        let open_uri = format!(
-            "obsidian://advanced-uri?vault={}&filepath={}|{}",
+        // Open the existing note as-is; omit mode=new and data so tags are never appended.
+        // Kept scheme-less (`vault=...` instead of `obsidian://...`) so tapping Shift in
+        // Alfred does not trigger macOS Quick Look on the custom URI scheme; the action
+        // script in info.plist prepends `obsidian://advanced-uri?`.
+        let open_arg = format!(
+            "vault={}&filepath={}|{}",
             url_encode(&target.uri_vault),
             url_encode(&target.filepath(title_string)),
             title_string
@@ -48,7 +51,7 @@ pub fn build_create_item(
 
         Item::new(format!("Open existing \"{}\"", title_string))
             .set_subtitle("Note already exists")
-            .set_arg(open_uri)
+            .set_arg(open_arg)
             .set_valid(true)
     } else {
         // A slash in the typed title means the note lands in a subdirectory of the vault.
@@ -86,8 +89,8 @@ pub fn build_create_item(
             format!("\n\n{}", tag_string)
         };
 
-        let create_uri = format!(
-            "obsidian://advanced-uri?vault={}&filepath={}&mode=new&data={}|{}",
+        let create_arg = format!(
+            "vault={}&filepath={}&mode=new&data={}|{}",
             url_encode(&target.uri_vault),
             url_encode(&target.filepath(title_string)),
             url_encode(&body_string),
@@ -96,7 +99,7 @@ pub fn build_create_item(
 
         Item::new(format!("Create \"{}\"", file_name_str))
             .set_subtitle(create_subtitle)
-            .set_arg(create_uri)
+            .set_arg(create_arg)
             .set_valid(true)
     }
 }
@@ -182,7 +185,7 @@ pub fn assemble_alfred_items(
         let item = Item::new(res.title.clone())
             .set_subtitle(subtitle)
             .set_arg(format!(
-                "obsidian://advanced-uri?vault={}&filepath={}|{}",
+                "vault={}&filepath={}|{}",
                 url_encode(&target.uri_vault),
                 url_encode(&target.filepath(&arg_path)),
                 res.title

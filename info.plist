@@ -314,7 +314,7 @@
 				<key>escaping</key>
 				<integer>102</integer>
 				<key>script</key>
-				<string>open "$1&amp;openmode=true"</string>
+				<string>open "obsidian://advanced-uri?${1#obsidian://advanced-uri?}&amp;openmode=true"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
@@ -438,7 +438,7 @@
 				<key>escaping</key>
 				<integer>102</integer>
 				<key>script</key>
-				<string>open "$1&amp;openmode=window"</string>
+				<string>open "obsidian://advanced-uri?${1#obsidian://advanced-uri?}&amp;openmode=window"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
@@ -721,7 +721,7 @@ Full documentation: [github.com/drgrib/alfred-obsidian](https://github.com/drgri
 		</dict>
 	</array>
 	<key>version</key>
-	<string>1.0.0</string>
+	<string>1.0.1</string>
 	<key>webaddress</key>
 	<string>https://github.com/drgrib/alfred-obsidian</string>
 </dict>

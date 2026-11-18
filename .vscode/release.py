@@ -157,9 +157,14 @@ def verify_packaged_workflow(out_path: Path, version: str) -> None:
             text=True,
             check=True,
         )
-        cs_titles = [item.get("title") for item in json.loads(cs_res.stdout).get("items", [])]
+        cs_items = json.loads(cs_res.stdout).get("items", [])
+        cs_titles = [item.get("title") for item in cs_items]
         if cs_titles != ["Smoke Test Note", 'Create "exact phrase"']:
             sys.exit(f"Error: unexpected createsearch smoke test output: {cs_titles}")
+        for item in cs_items:
+            arg = str(item.get("arg", ""))
+            if "://" in arg.split("|", 1)[0]:
+                sys.exit(f"Error: item arg must be scheme-less to prevent Shift Quick Look: {arg!r}")
 
         empty_res = subprocess.run(
             [str(bin_path), "search", ""],
